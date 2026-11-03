@@ -2,6 +2,8 @@
 <html lang="my" class="dark h-full">
 <head>
     <meta charset="UTF-8">
+    <link rel="preload" as="image" href="reze.webp" type="image/webp">
+    <meta name="theme-color" content="#060e10">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sakura Realm - Main Web & Chapter Lobby</title>
          
@@ -24,19 +26,19 @@
                 extend: {
                     colors: {
                         dark: {
-                            base: '#08090f',
-                            surface: '#0d0f1a',
-                            card: '#141726',
+                            base: '#060e10',
+                            surface: '#0a1618',
+                            card: '#0f2124',
                             border: 'rgba(255, 255, 255, 0.1)'
                         },
                         sakura: {
-                            50: '#fff0f5',
-                            100: '#ffe4ed',
-                            300: '#ff8dae',
-                            400: '#ff5c8a',
-                            500: '#ff3b75',
-                            600: '#e61d5b',
-                            900: '#3d081b'
+                            50: '#ecfdf8',
+                            100: '#d0f7ec',
+                            300: '#5fe0c2',
+                            400: '#2cc7a9',
+                            500: '#0ea691',
+                            600: '#0b8a79',
+                            900: '#072e29'
                         }
                     },
                     fontFamily: {
@@ -44,8 +46,8 @@
                         serif: ['Cinzel', 'serif']
                     },
                     boxShadow: {
-                        'sakura-glow': '0 0 15px rgba(255, 59, 117, 0.25)',
-                        'sakura-sm': '0 0 6px rgba(255, 59, 117, 0.15)'
+                        'sakura-glow': '0 0 15px rgba(14,166,145, 0.25)',
+                        'sakura-sm': '0 0 6px rgba(14,166,145, 0.15)'
                     }
                 }
             }
@@ -71,13 +73,13 @@
                                 <path d="M 0,-10 C -12,-35 0,-45 0,-45 C 0,-45 12,-35 0,-10 Z" fill="url(#sakuraGrad)" transform="rotate(216)" />
                                 <path d="M 0,-10 C -12,-35 0,-45 0,-45 C 0,-45 12,-35 0,-10 Z" fill="url(#sakuraGrad)" transform="rotate(288)" />
                                 <circle cx="0" cy="0" r="6" fill="#ffffff" />
-                                <circle cx="0" cy="0" r="3" fill="#ff3b75" />
+                                <circle cx="0" cy="0" r="3" fill="#0ea691" />
                             </g>
                             <defs>
                                 <linearGradient id="sakuraGrad" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="0%" stop-color="#ffe4ed" />
-                                    <stop offset="60%" stop-color="#ff5c8a" />
-                                    <stop offset="100%" stop-color="#ff3b75" />
+                                    <stop offset="0%" stop-color="#d0f7ec" />
+                                    <stop offset="60%" stop-color="#2cc7a9" />
+                                    <stop offset="100%" stop-color="#0ea691" />
                                 </linearGradient>
                             </defs>
                         </svg>
@@ -129,7 +131,7 @@
     </div>
 
     <!-- FILTER POPUP MODAL -->
-    <div id="filterBackdrop" onclick="toggleFilterModal()" class="fixed inset-0 bg-black/50 z-70 opacity-0 pointer-events-none transition-opacity duration-300"></div>
+    <div id="filterBackdrop" onclick="toggleFilterModal()" class="fixed inset-0 bg-black/50 z-[70] opacity-0 pointer-events-none transition-opacity duration-300"></div>
     <div id="filterModal" class="settings-modal-box">
         <div class="flex items-center justify-between border-b border-sakura-500/20 pb-3 mb-4">
             <span class="text-sm font-bold font-serif text-sakura-glow flex items-center gap-2">
@@ -173,7 +175,7 @@
     </div>
 
     <!-- SETTINGS POPUP MODAL -->
-    <div id="settingsBackdrop" onclick="toggleSettingsModal()" class="fixed inset-0 bg-black/50 z-70 opacity-0 pointer-events-none transition-opacity duration-300"></div>
+    <div id="settingsBackdrop" onclick="toggleSettingsModal()" class="fixed inset-0 bg-black/50 z-[70] opacity-0 pointer-events-none transition-opacity duration-300"></div>
     <div id="settingsModal" class="settings-modal-box">
         <div class="flex items-center justify-between border-b border-sakura-500/20 pb-3 mb-4">
             <span class="text-sm font-bold font-serif text-sakura-glow flex items-center gap-2">
@@ -209,7 +211,7 @@
                         <i class="fa-solid fa-gauge text-[10px]"></i> Low (480p)
                     </button>
                     <button id="qualMed" onclick="setImageQuality('medium')" class="setting-btn-inactive py-2.5 px-2 rounded-xl border transition text-center flex items-center justify-center gap-1.5 text-xs">
-                        <i class="fa-solid fa-gauge-med text-[10px]"></i> Medium (720p)
+                        <i class="fa-solid fa-gauge-high text-[10px]"></i> Medium (720p)
                     </button>
                     <button id="qualHigh" onclick="setImageQuality('high')" class="setting-btn-active py-2.5 px-2 rounded-xl border transition text-center flex items-center justify-center gap-1.5 text-xs shadow-md">
                         <i class="fa-solid fa-gauge-high text-[10px]"></i> High (Original)
@@ -271,10 +273,31 @@
                 <div class="sakura-slight-divider"></div>
             </div>
             
-            <div class="glass-card rounded-2xl p-4 sm:p-5 text-center w-full">
-                <h1 class="text-base sm:text-xl font-bold font-serif text-sakura-glow tracking-wide">WELCOME TO SAKURA REALM</h1>
+            <!-- WELCOME HERO v2: Reze (teal) | groove | Latest Update carousel -->
+            <div id="welcomeHero" class="welcome-hero" role="region" aria-label="Welcome to Sakura Realm">
+                <h1 class="visually-hidden">Welcome to Sakura Realm</h1>
+                <button type="button" class="lh-tab" onclick="navigateToView('latest','updates','Latest Updates')" aria-label="Open Latest Updates">
+                    <span class="lh-live" aria-hidden="true"></span>
+                    <span class="text-xs sm:text-sm font-bold font-serif tracking-wide text-sakura-glow">LATEST UPDATE</span>
+                </button>
+                <div class="welcome-hero-inner">
+                    <div class="wh-left" aria-hidden="true">
+                        <div class="wh-deco"></div>
+                        <div class="wh-ring"></div>
+                        <div class="wh-reze"></div>
+                        <span class="wh-spark s1"></span><span class="wh-spark s2"></span><span class="wh-spark s3"></span>
+                    </div>
+                    <div class="wh-groove" aria-hidden="true"></div>
+                    <div class="wh-groove-line" aria-hidden="true"></div>
+                    <div class="wh-groove-line2" aria-hidden="true"></div>
+                    <div class="wh-right">
+                        <div class="wh-watermark" aria-hidden="true">UPDATE</div>
+                        <div class="lh-stage"><div id="latestHeroSlides" class="lh-slides"></div></div>
+                        <div id="latestHeroDots" class="lh-dots"></div>
+                    </div>
+                </div>
             </div>
-            
+
             <div class="space-y-3.5 w-full">
                 <div class="flex items-center justify-between px-1">
                     <h2 class="text-xs sm:text-sm font-bold font-serif tracking-wide text-sakura-glow flex items-center gap-1.5">
@@ -296,8 +319,10 @@
             </button>
             <div class="glass-card rounded-2xl p-5 space-y-2 w-full">
                 <h2 id="genresTitle" class="text-xl font-bold font-serif text-sakura-glow">Browse Genres</h2>
-                <p class="text-xs text-slate-400">Categories listing desu~</p>
+                <p id="genresSubtitle" class="text-xs text-slate-400">Pick a genre to filter desu~</p>
             </div>
+            <div id="genresChips" class="flex flex-wrap gap-2 w-full"></div>
+            <div id="genresGrid" class="grid grid-cols-2 gap-4 sm:gap-6 w-full max-w-md mx-auto sm:max-w-xl"></div>
         </section>
 
         <!-- VIEW 3: CHAPTER LOBBY / DETAIL VIEW -->
@@ -374,7 +399,7 @@
         </section>
 
         <!-- VIEW 4: READER VIEW -->
-        <section id="readerView" class="view-section hidden fixed inset-0 z-50 bg-black overflow-y-auto w-full min-h-screen p-0 m-0">
+        <section id="readerView" class="view-section hidden fixed inset-0 z-50 bg-black overflow-y-auto overflow-x-hidden w-full min-h-screen p-0 m-0">
             <div id="readerPagesContainer" onclick="handleReaderScreenTap(event)" class="w-full min-h-screen flex flex-col items-center justify-start p-0 m-0 space-y-0 bg-black cursor-pointer"></div>
         </section>
     </main>
