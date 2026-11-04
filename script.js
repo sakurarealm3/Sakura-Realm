@@ -70,6 +70,7 @@ let previousActiveView = '';
 let navDirection = 'forward';
 let navIndex = (history.state && Number.isInteger(history.state.idx)) ? history.state.idx : 0;
 let firstViewRendered = false;
+let shownDetailId = '';        // which manga the Chapter Lobby is currently showing
 
 // --- Firebase Realtime Database Listener ---
 // Your uploader puts the upload time in the id ("manga-1792345862945", "ch-1792345922644")
@@ -711,41 +712,127 @@ function renderGenresView() {
     list.forEach(m => grid.appendChild(buildMangaCard(m)));
 }
 
+// ---- Chapter list display prefs (sort + layout) ----
+const CH_PREFS_KEY = "sakura_chapter_list_prefs_v1";
+const CH_LIST_LIMIT = 10;      // list layout: show this many, the rest behind "Show more"
+let chPrefs = (() => {
+    const p = safeGet(CH_PREFS_KEY, {});
+    return {
+        sort: p.sort === 'oldest' ? 'oldest' : 'newest',
+        view: p.view === 'grid' ? 'grid' : 'list'
+    };
+})();
+let chExpandedFor = '';        // manga id whose list is fully expanded ("Show more" pressed)
+let chLastMangaId = '';
+
+function chapterTileLabel(ch) {
+    if (Number.isFinite(ch.num)) return String(ch.num);
+    const m = String(ch.title || '').match(/(\d+(?:\.\d+)?)/);
+    return m ? m[1] : '#';
+}
+
+function syncChapterTools() {
+    const sb = document.getElementById('chSortBtn');
+    if (sb) {
+        sb.dataset.sort = chPrefs.sort;
+        const t = chPrefs.sort === 'newest' ? 'Newest first - tap for Oldest first' : 'Oldest first - tap for Newest first';
+        sb.title = t; sb.setAttribute('aria-label', t);
+    }
+    const vb = document.getElementById('chViewToggle');
+    if (vb) {
+        // icon shows the layout you will SWITCH TO
+        const toGrid = chPrefs.view === 'list';
+        vb.innerHTML = `<i class="fa-solid ${toGrid ? 'fa-table-cells-large' : 'fa-list'}"></i>`;
+        vb.title = toGrid ? 'Show as blocks' : 'Show as list';
+        vb.setAttribute('aria-label', vb.title);
+    }
+}
+
+window.setChapterSort = function(mode) {
+    if (mode !== 'newest' && mode !== 'oldest') return;
+    if (chPrefs.sort === mode) return;
+    chPrefs.sort = mode;
+    safeSet(CH_PREFS_KEY, chPrefs);
+    renderChapterList(shownDetailId || currentDetailId());
+};
+window.toggleChapterSort = function() {
+    window.setChapterSort(chPrefs.sort === 'newest' ? 'oldest' : 'newest');
+};
+window.toggleChapterView = function() {
+    chPrefs.view = chPrefs.view === 'list' ? 'grid' : 'list';
+    safeSet(CH_PREFS_KEY, chPrefs);
+    renderChapterList(shownDetailId || currentDetailId());
+};
+
 function renderChapterList(mangaId) {
     const container = document.getElementById('chapterListContainer');
     if (!container) return;
     container.innerHTML = '';
 
     const foundManga = loadSharedMangas().find(m => m.id === mangaId);
-    const chapters = (foundManga && foundManga.chapters && foundManga.chapters.length > 0) ? foundManga.chapters : [
+    const baseChapters = (foundManga && foundManga.chapters && foundManga.chapters.length > 0) ? foundManga.chapters : [
         { id: 'ch-3', title: 'Chapter 3 (Preview)', date: '2026-06-01', pages: [] },
         { id: 'ch-2', title: 'Chapter 2 (Preview)', date: '2026-05-15', pages: [] },
         { id: 'ch-1', title: 'Chapter 1 (Preview)', date: '2026-05-01', pages: [] }
     ];
+    // stored order is newest-first; "Oldest" just flips a copy (the data itself is untouched)
+    const chapters = chPrefs.sort === 'oldest' ? baseChapters.slice().reverse() : baseChapters;
 
-    chapters.forEach((ch) => {
+    if (chLastMangaId !== mangaId) { chLastMangaId = mangaId; chExpandedFor = ''; }
+
+    const countEl = document.getElementById('chapterCountBadge');
+    if (countEl) countEl.textContent = chapters.length;
+    syncChapterTools();
+
+    const isGrid = chPrefs.view === 'grid';
+    container.className = isGrid ? 'ch-grid w-full' : 'space-y-2.5 w-full';
+
+    if (isGrid) {
+        chapters.forEach((ch, ci) => {
+            const tile = document.createElement('button');
+            tile.type = 'button';
+            tile.className = 'ch-tile';
+            tile.style.setProperty('--i', Math.min(ci, 12));
+            tile.title = ch.title;
+            tile.onclick = () => navigateToReaderView(mangaId, ch.id, ch.title);
+            tile.innerHTML = `<span class="ch-tile-label">CH</span><span class="ch-tile-num">${esc(chapterTileLabel(ch))}</span>`;
+            container.appendChild(tile);
+        });
+        return;
+    }
+
+    const expanded = chExpandedFor === mangaId;
+    const visible = expanded ? chapters : chapters.slice(0, CH_LIST_LIMIT);
+
+    visible.forEach((ch, ci) => {
         const chBox = document.createElement('div');
+        chBox.style.setProperty('--i', Math.min(ci, 12));
         chBox.className = "chapter-grey-box flex items-center justify-between p-3.5 rounded-xl border border-dark-border cursor-pointer transition";
         chBox.onclick = () => navigateToReaderView(mangaId, ch.id, ch.title);
 
-        const pageCountText = ch.pages ? `${ch.pages.length} pages` : 'Preview';
         chBox.innerHTML = `
-            <div class="flex items-center gap-3">
-                <div class="w-8 h-8 rounded-lg bg-sakura-900/40 border border-sakura-500/30 flex items-center justify-center text-sakura-400 text-xs font-bold">
-                    <i class="fa-solid fa-book-open"></i>
-                </div>
-                <div class="flex flex-col">
-                    <span class="text-xs sm:text-sm font-bold text-slate-200">${esc(ch.title)}</span>
-                    <span class="text-[10px] text-slate-400">${esc(ch.date || 'Recent Release')} &nbsp; ${esc(pageCountText)}</span>
+            <div class="flex items-center gap-3 min-w-0">
+                <div class="ch-badge shrink-0"><i class="fa-solid fa-book-open"></i></div>
+                <div class="flex flex-col min-w-0 gap-0.5">
+                    <span class="ch-title text-xs sm:text-sm font-bold text-slate-100">${esc(ch.title)}</span>
+                    <span class="ch-meta text-[10px] text-slate-400">
+                        <span><i class="fa-regular fa-calendar"></i> ${esc(ch.date || 'Recent Release')}</span>
+                    </span>
                 </div>
             </div>
-            <div class="flex items-center gap-2 text-xs text-sakura-400 font-bold">
-                <span>Read</span>
-                <i class="fa-solid fa-chevron-right text-[10px]"></i>
-            </div>
+            <div class="ch-go shrink-0"><i class="fa-solid fa-chevron-right text-[10px]"></i></div>
         `;
         container.appendChild(chBox);
     });
+
+    if (!expanded && chapters.length > CH_LIST_LIMIT) {
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'ch-show-more';
+        more.innerHTML = `Show more <span class="ch-more-count">+${chapters.length - CH_LIST_LIMIT}</span> <i class="fa-solid fa-chevron-down text-[10px]"></i>`;
+        more.onclick = () => { chExpandedFor = mangaId; renderChapterList(mangaId); };
+        container.appendChild(more);
+    }
 }
 
 window.readFirstChapter = function() {
@@ -797,14 +884,20 @@ window.goBackToDetailFromReader = function() {
 
 const scrollPositions = {};
 
+// Remember where the visible page is scrolled to. The Chapter Lobby is remembered PER MANGA,
+// so coming back from the reader returns to the same spot in the chapter list.
+function rememberScroll() {
+    const s = document.querySelector('.view-section:not(.hidden)');
+    if (!s) return;
+    const key = s.id === 'detailView' ? 'detail:' + shownDetailId : s.id;
+    scrollPositions[key] = window.scrollY;
+}
+
 window.navigateToView = function(viewName, id = '', title = '', direction = 'forward') {
     previousActiveView = currentActiveView;
     currentActiveView = viewName;
 
-    const activeSection = document.querySelector('.view-section:not(.hidden)');
-    if (activeSection) {
-        scrollPositions[activeSection.id] = window.scrollY;
-    }
+    rememberScroll();
 
     // From the first in-app navigation on we restore scroll ourselves (scrollPositions).
     // Otherwise the browser's own restoration scrolls the OLD page (clamped) a frame before our swap -> visible jump.
@@ -828,8 +921,7 @@ window.goHome = function() {
 };
 
 window.addEventListener('popstate', (e) => {
-    const leaving = document.querySelector('.view-section:not(.hidden)');
-    if (leaving) scrollPositions[leaving.id] = window.scrollY;
+    rememberScroll();
     const idx = (e.state && Number.isInteger(e.state.idx)) ? e.state.idx : null;
     if (idx !== null) {
         navDirection = idx < navIndex ? 'back' : 'forward';
@@ -1251,6 +1343,7 @@ function applyView(state, mode) {
     }
     if (state.view === 'detail') {
         targetId = 'detailView';
+        shownDetailId = state.id;
         const found = loadSharedMangas().find(m => m.id === state.id);
         if (found) fillDetail(found);
     }
@@ -1299,35 +1392,471 @@ function applyView(state, mode) {
         if (readerSec) readerSec.scrollTop = 0;
         window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
     } else if (state.view === 'detail') {
-        window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+        // Back from the reader -> same spot in the chapter list.  Arriving from Home (or anywhere else) -> top.
+        const key = 'detail:' + state.id;
+        const y = (navDirection === 'back' && mode !== 'first') ? (scrollPositions[key] || 0) : 0;
+        if (navDirection !== 'back') delete scrollPositions[key];
+        window.scrollTo({ top: y, left: 0, behavior: 'instant' });
     } else {
         window.scrollTo({ top: scrollPositions[targetId] || 0, left: 0, behavior: 'instant' });
     }
 }
 
-window.toggleSearchBar = function() {
+// ---- Search dropdown + "recent searches" memory ----
+const RECENT_SEARCH_KEY = "sakura_recent_searches_v1";
+const RECENT_SEARCH_MAX = 8;
+let searchBodyMode = '';
+let searchDebounce = null;     // debounce timer for live Home filtering (must be cancelled when the search closes)
+let searchDusting = false;     // true while the "Clear all" dust animation is playing
+
+function getRecentSearches() {
+    const list = safeGet(RECENT_SEARCH_KEY, []);
+    return Array.isArray(list) ? list.filter(x => x && x.id) : [];
+}
+function saveRecentSearch(m) {
+    const list = getRecentSearches().filter(x => x.id !== m.id);
+    list.unshift({ id: m.id, title: m.title, image: m.image, genre: m.genre || '', t: Date.now() });
+    safeSet(RECENT_SEARCH_KEY, list.slice(0, RECENT_SEARCH_MAX));
+}
+function isSearchOpen() {
+    const o = document.getElementById('searchOverlay');
+    return !!o && o.classList.contains('is-open');
+}
+
+function highlightMatch(title, q) {
+    const i = title.toLowerCase().indexOf(q.toLowerCase());
+    if (i < 0 || !q) return esc(title);
+    return esc(title.slice(0, i)) + '<mark>' + esc(title.slice(i, i + q.length)) + '</mark>' + esc(title.slice(i + q.length));
+}
+
+function searchItemHtml(m, i, opts) {
+    const sub = m.genre || m.status || m.coverType || 'Manga';
+    const badge = opts.recent ? '<span class="search-thumb-badge"><i class="fa-solid fa-clock-rotate-left"></i></span>' : '';
+    const trail = opts.recent
+        ? '<span class="search-remove" role="button" tabindex="0" data-remove="' + esc(m.id) + '" aria-label="Remove from recent"><i class="fa-solid fa-xmark"></i></span>'
+        : '<i class="fa-solid fa-chevron-right search-go"></i>';
+    return '<div class="search-item" role="button" tabindex="0" data-id="' + esc(m.id) + '" style="--i:' + i + '">' +
+        '<span class="search-thumb" style=\'background-image:' + esc(cssUrl(m.image)) + '\'>' + badge + '</span>' +
+        '<span class="search-meta"><span class="search-title">' + (opts.q ? highlightMatch(String(m.title || ''), opts.q) : esc(m.title)) + '</span>' +
+        '<span class="search-sub">' + esc(sub) + '</span></span>' + trail + '</div>';
+}
+
+function getSearchMatches(q) {
+    const ql = q.toLowerCase();
+    return loadSharedMangas()
+        .filter(m => ((m.title || '') + ' ' + (m.genre || '')).toLowerCase().includes(ql))
+        .sort((a, b) => {
+            const as = String(a.title || '').toLowerCase().startsWith(ql) ? 0 : 1;
+            const bs = String(b.title || '').toLowerCase().startsWith(ql) ? 0 : 1;
+            return as - bs;
+        });
+}
+
+function renderSearchBody(forceAnimate) {
+    const body = document.getElementById('searchBody');
+    const input = document.getElementById('searchInput');
+    if (!body || !input) return;
+    const q = input.value.trim();
+    const mode = q ? 'results' : 'recent';
+    let html = '';
+
+    if (mode === 'recent') {
+        const all = loadSharedMangas();
+        const live = new Map(all.map(m => [m.id, m]));
+        const list = getRecentSearches().map(r => live.get(r.id) || (all.length ? null : r)).filter(Boolean);
+        if (list.length) {
+            html = '<div class="search-section"><span><i class="fa-solid fa-clock-rotate-left"></i> Recent searches</span>' +
+                   '<button type="button" class="search-clear-all" data-clear-all>Clear all</button></div>' +
+                   list.map((m, i) => searchItemHtml(m, i, { recent: true })).join('');
+        } else {
+            html = '<div class="search-empty"><i class="fa-regular fa-clock"></i><p>Manga you search for will be remembered here</p></div>';
+        }
+    } else {
+        const matches = getSearchMatches(q);
+        if (matches.length) {
+            html = '<div class="search-section"><span><i class="fa-solid fa-wand-magic-sparkles"></i> Results</span><em>' + matches.length + '</em></div>' +
+                   matches.slice(0, 6).map((m, i) => searchItemHtml(m, i, { q })).join('');
+            if (matches.length > 6) html += '<div class="search-more">+' + (matches.length - 6) + ' more shown on Home</div>';
+        } else {
+            html = '<div class="search-empty"><i class="fa-regular fa-face-sad-tear"></i><p>No manga found for “' + esc(q) + '”</p></div>';
+        }
+    }
+
+    body.classList.toggle('stagger', !!forceAnimate || mode !== searchBodyMode);
+    searchBodyMode = mode;
+    body.innerHTML = html;
+}
+
+let searchOpening = false;
+function openSearchResult(id) {
+    if (searchOpening || searchDusting) return;
+    const m = loadSharedMangas().find(x => x.id === id) || getRecentSearches().find(x => x.id === id);
+    if (!m) return;
+    saveRecentSearch(m);
+    searchOpening = true;
+    clearTimeout(searchDebounce); searchDebounce = null;
+    // 1) close the search panel + dim backdrop + keyboard with their normal animation
+    closeSearchBar(true);
+    // 2) when Home is clean again (same state as tapping a card), run the exact same Chapter Lobby transition
+    setTimeout(() => {
+        searchOpening = false;
+        window.navigateToView('detail', m.id, m.title);
+        // 3) reset the Home filter afterwards (Home is hidden now, so nothing flashes)
+        if (searchQuery) { searchQuery = ''; renderMainMangaGrid(); }
+    }, 340);
+}
+
+function loadDustImage(url) {
+    return new Promise(res => {
+        const done = (img) => res(img);
+        const tryLoad = (cors) => {
+            const im = new Image();
+            if (cors) im.crossOrigin = 'anonymous';
+            im.onload = () => done(im);
+            im.onerror = () => cors ? tryLoad(false) : done(null);
+            im.src = url;
+        };
+        tryLoad(true);
+        setTimeout(() => done(null), 1500);
+    });
+}
+function dustWrapText(ctx, text, maxW, maxLines) {
+    const words = String(text).split(/\s+/), lines = [];
+    let cur = '';
+    for (const w of words) {
+        const t = cur ? cur + ' ' + w : w;
+        if (ctx.measureText(t).width <= maxW || !cur) cur = t;
+        else { lines.push(cur); cur = w; }
+    }
+    if (cur) lines.push(cur);
+    if (lines.length > maxLines) {
+        lines.length = maxLines;
+        let l = lines[maxLines - 1];
+        while (l.length > 1 && ctx.measureText(l + '…').width > maxW) l = l.slice(0, -1);
+        lines[maxLines - 1] = l + '…';
+    }
+    return lines;
+}
+
+// ---- Dust effect: the real cover + title crumble into ROUND dust grains and blow away ----
+// Used by BOTH "Clear all" (every row) and the little X on one row (just that row).
+let dustActive = 0;            // how many dust animations are playing right now
+
+function dustReduced() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+// copy of a canvas where every (step x step) cell is cut into a circle -> each grain is a round dot
+function dustRoundSheet(src, step) {
+    const sheet = document.createElement('canvas');
+    sheet.width = src.width; sheet.height = src.height;
+    const sx = sheet.getContext('2d');
+    sx.drawImage(src, 0, 0);
+    const mask = document.createElement('canvas');
+    mask.width = src.width; mask.height = src.height;
+    const mx = mask.getContext('2d');
+    mx.fillStyle = '#000';
+    for (let y = 0; y < src.height; y += step) for (let x = 0; x < src.width; x += step) {
+        mx.beginPath(); mx.arc(x + step / 2, y + step / 2, step / 2, 0, Math.PI * 2); mx.fill();
+    }
+    sx.globalCompositeOperation = 'destination-in';
+    sx.drawImage(mask, 0, 0);
+    return sheet;
+}
+
+// after the row has turned to dust, let the rows below slide up smoothly
+function dustCollapseRow(el) {
+    if (!el || !el.isConnected) return;
+    el.style.height = el.offsetHeight + 'px';
+    void el.offsetHeight;
+    el.classList.add('dust-collapse');
+    el.style.height = '0px';
+}
+
+function dustAfter() {
+    dustActive = Math.max(0, dustActive - 1);
+    searchDusting = dustActive > 0;
+    if (!dustActive) renderSearchBody(getRecentSearches().length === 0);
+}
+
+async function dustItems(items, opts) {
+    opts = opts || {};
+    const body = document.getElementById('searchBody');
+    const recents = getRecentSearches();      // read now: callers delete the entries from storage right after calling us
+    dustActive++; searchDusting = true;
+    try {
+        const DPR = Math.min(window.devicePixelRatio || 1, 2);
+        const step = Math.max(2, Math.round(2 * DPR));   // one grain = 2 css px (was 3) -> far more dust
+        const GS = step / DPR;
+        const MAX_GRAINS = 18000;
+
+        // measure everything first (before any await, while the layout is still untouched)
+        const rows = items.map((el, idx) => {
+            const title = el.querySelector('.search-title'), sub = el.querySelector('.search-sub');
+            const pick = (n) => { const s = getComputedStyle(n); return { fw: s.fontWeight, fs: s.fontSize, ff: s.fontFamily, color: s.color, lh: s.lineHeight }; };
+            return {
+                el, idx,
+                rec: recents.find(r => r.id === el.getAttribute('data-id')),
+                rowR: el.getBoundingClientRect(),
+                tr: el.querySelector('.search-thumb').getBoundingClientRect(),
+                mr: el.querySelector('.search-meta').getBoundingClientRect(),
+                tR: title.getBoundingClientRect(), sR: sub.getBoundingClientRect(),
+                tcs: pick(title), scs: pick(sub),
+                titleText: title.textContent, subText: sub.textContent
+            };
+        });
+
+        const grains = [];
+        // "static" layer = the intact rows; a row's grains are erased from it the moment they start to fly
+        const stc = document.createElement('canvas');
+        stc.width = Math.round(innerWidth * DPR); stc.height = Math.round(innerHeight * DPR);
+        const stx = stc.getContext('2d');
+        stx.scale(DPR, DPR);
+
+        await Promise.all(rows.map(async (r) => {
+            const img = r.rec && r.rec.image ? await loadDustImage(r.rec.image) : null;
+            const rowDelay = r.idx * 110;
+
+            const addGrains = (sheet, left, top, W, H, PW, PH, alpha) => {
+                for (let sy = 0; sy < PH; sy += step) for (let sx = 0; sx < PW; sx += step) {
+                    if (sx >= W || sy >= H) continue;
+                    if (alpha) {                                   // text layer: skip empty cells
+                        let hit = false;
+                        for (let yy = sy; yy < Math.min(sy + step, PH) && !hit; yy++)
+                            for (let xx2 = sx; xx2 < Math.min(sx + step, PW); xx2++)
+                                if (alpha[(yy * PW + xx2) * 4 + 3] > 6) { hit = true; break; }
+                        if (!hit) continue;
+                    }
+                    const gx = left + sx / DPR, gy = top + sy / DPR;
+                    const sweep = ((gx - r.rowR.left) / r.rowR.width) * 520;      // wave sweeps left -> right
+                    const start = 120 + rowDelay + sweep + Math.random() * 260;
+                    grains.push({
+                        sheet, sx, sy, x: gx, y: gy, start, bonus: false, size: GS,
+                        life: 1100 + Math.random() * 900,
+                        vx: 0.8 + Math.random() * 2.6, vy: -(0.2 + Math.random() * 1.6),
+                        wob: Math.random() * 6.28, wf: 0.004 + Math.random() * 0.006, amp: 4 + Math.random() * 14
+                    });
+                    // extra loose dust around every grain -> a thick cloud
+                    if (grains.length < MAX_GRAINS && (!alpha || Math.random() < 0.8)) {
+                        grains.push({
+                            sheet, sx, sy, bonus: true,
+                            x: gx + (Math.random() - 0.5) * GS * 3, y: gy + (Math.random() - 0.5) * GS * 3,
+                            start: start + Math.random() * 380, size: GS * (0.55 + Math.random() * 0.95),
+                            life: 1300 + Math.random() * 1500,
+                            vx: 1.2 + Math.random() * 3.4, vy: -(0.1 + Math.random() * 2.2),
+                            wob: Math.random() * 6.28, wf: 0.003 + Math.random() * 0.007, amp: 6 + Math.random() * 22
+                        });
+                    }
+                }
+            };
+
+            // --- cover layer
+            const W = Math.ceil(r.tr.width * DPR), H = Math.ceil(r.tr.height * DPR);
+            const PW = Math.ceil(W / step) * step, PH = Math.ceil(H / step) * step;
+            const tc = document.createElement('canvas'); tc.width = PW; tc.height = PH;
+            const tx = tc.getContext('2d');
+            tx.beginPath();
+            if (tx.roundRect) tx.roundRect(0, 0, W, H, 10 * DPR); else tx.rect(0, 0, W, H);
+            tx.clip();
+            tx.fillStyle = '#0f2124'; tx.fillRect(0, 0, W, H);
+            if (img && img.naturalWidth) {
+                const sc = Math.max(W / img.naturalWidth, H / img.naturalHeight);
+                const w = img.naturalWidth * sc, h = img.naturalHeight * sc;
+                tx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+            } else {
+                const g = tx.createLinearGradient(0, 0, W, H);
+                g.addColorStop(0, '#2cc7a9'); g.addColorStop(1, '#ff8fab');
+                tx.fillStyle = g; tx.fillRect(0, 0, W, H);
+            }
+            stx.drawImage(tc, r.tr.left, r.tr.top, PW / DPR, PH / DPR);
+            addGrains(dustRoundSheet(tc, step), r.tr.left, r.tr.top, W, H, PW, PH, null);
+
+            // --- text layer (same font / colour as the row)
+            const XW = Math.ceil(r.mr.width * DPR), XH = Math.ceil(r.mr.height * DPR);
+            const XPW = Math.ceil(XW / step) * step, XPH = Math.ceil(XH / step) * step;
+            const xc = document.createElement('canvas'); xc.width = XPW; xc.height = XPH;
+            const xx = xc.getContext('2d');
+            xx.scale(DPR, DPR);
+            xx.textBaseline = 'top';
+            const tfs = parseFloat(r.tcs.fs), tlh = parseFloat(r.tcs.lh) || tfs * 1.25;
+            xx.font = `${r.tcs.fw} ${r.tcs.fs} ${r.tcs.ff}`; xx.fillStyle = r.tcs.color;
+            dustWrapText(xx, r.titleText, r.tR.width, 2).forEach((ln, i) =>
+                xx.fillText(ln, r.tR.left - r.mr.left, r.tR.top - r.mr.top + i * tlh + (tlh - tfs) / 2));
+            const sfs = parseFloat(r.scs.fs);
+            xx.font = `${r.scs.fw} ${r.scs.fs} ${r.scs.ff}`; xx.fillStyle = r.scs.color;
+            xx.fillText(dustWrapText(xx, r.subText, r.sR.width, 1)[0] || '', r.sR.left - r.mr.left, r.sR.top - r.mr.top + (r.sR.height - sfs) / 2);
+            let alpha = null;
+            try { alpha = xx.getImageData(0, 0, XPW, XPH).data; } catch (e) {}
+            stx.drawImage(xc, r.mr.left, r.mr.top, XPW / DPR, XPH / DPR);
+            addGrains(dustRoundSheet(xc, step), r.mr.left, r.mr.top, XW, XH, XPW, XPH, alpha);
+        }));
+
+        grains.sort((a, b) => a.start - b.start);
+
+        // overlay canvas; the real rows are hidden on the very frame the intact copy appears
+        const cv = document.createElement('canvas');
+        cv.className = 'dust-canvas';
+        cv.width = Math.round(innerWidth * DPR); cv.height = Math.round(innerHeight * DPR);
+        document.body.appendChild(cv);
+        const ctx = cv.getContext('2d');
+        ctx.scale(DPR, DPR);
+        ctx.drawImage(stc, 0, 0, innerWidth, innerHeight);
+        items.forEach(el => el.classList.add('dust-hide'));
+        const hdr = body && body.querySelector('.search-clear-all');
+        if (hdr && (opts.all || !body.querySelector('.search-item:not(.dust-hide)'))) hdr.classList.add('dust-fade');
+        if (opts.collapse) items.forEach(el => setTimeout(() => dustCollapseRow(el), 200));
+
+        let end = 0;
+        grains.forEach(g => { end = Math.max(end, g.start + g.life); });
+        const live = [];
+        let next = 0;
+        const t0 = performance.now();
+        await new Promise((resolve) => {
+            (function frame(now) {
+                const t = now - t0;
+                ctx.clearRect(0, 0, innerWidth, innerHeight);
+                while (next < grains.length && grains[next].start <= t) {      // grains that take off now
+                    const g = grains[next++];
+                    if (!g.bonus) stx.clearRect(g.x - 0.5, g.y - 0.5, GS + 1, GS + 1);
+                    live.push(g);
+                }
+                if (next < grains.length) ctx.drawImage(stc, 0, 0, innerWidth, innerHeight);   // the part that has not crumbled yet
+                for (let i = live.length - 1; i >= 0; i--) {
+                    const g = live[i];
+                    const age = t - g.start;
+                    if (age > g.life) { live[i] = live[live.length - 1]; live.pop(); continue; }
+                    const k = age / g.life, ease = k * k;
+                    const x = g.x + g.vx * age * 0.075 + Math.sin(g.wob + age * g.wf) * g.amp * ease;
+                    const y = g.y + g.vy * age * 0.06 - 70 * ease + Math.cos(g.wob + age * g.wf) * 5 * k;
+                    const s = g.size * (1 - k * 0.45);
+                    ctx.globalAlpha = Math.max(0, 1 - k * 1.05);
+                    ctx.drawImage(g.sheet, g.sx, g.sy, step, step, x, y, s, s);
+                }
+                ctx.globalAlpha = 1;
+                if (t < end + 60) requestAnimationFrame(frame);
+                else { cv.remove(); resolve(); }
+            })(t0);
+        });
+    } catch (err) {
+        console.warn('dust effect failed', err);
+        document.querySelectorAll('.dust-canvas').forEach(c => c.remove());
+    }
+    dustAfter();
+}
+
+// "Clear all": every visible row turns to dust, memory is wiped
+function dustClearAll() {
+    const body = document.getElementById('searchBody');
+    const items = body ? Array.from(body.querySelectorAll('.search-item:not(.dust-hide)')) : [];
+    if (!items.length || dustReduced()) {
+        safeSet(RECENT_SEARCH_KEY, []);
+        renderSearchBody(true);
+        return;
+    }
+    dustItems(items, { all: true });                 // (its first lines read the covers from storage before we wipe it)
+    safeSet(RECENT_SEARCH_KEY, []);
+}
+
+// the X on ONE row: only that row turns to dust, the rows below slide up
+function removeRecentSearch(id, row) {
+    if (row && row.classList.contains('dust-hide')) return;
+    if (!row || dustReduced()) {
+        safeSet(RECENT_SEARCH_KEY, getRecentSearches().filter(x => x.id !== id));
+        renderSearchBody(false);
+        return;
+    }
+    dustItems([row], { collapse: true });
+    safeSet(RECENT_SEARCH_KEY, getRecentSearches().filter(x => x.id !== id));
+}
+
+function openSearchBar() {
     const overlay = document.getElementById('searchOverlay');
     const input = document.getElementById('searchInput');
-    overlay.classList.toggle('hidden');
-    if (!overlay.classList.contains('hidden')) {
-        input.focus();
-    } else {
-        input.value = '';
-        if (searchQuery) { searchQuery = ''; renderMainMangaGrid(); }
-    }
+    if (!overlay || !input) return;
+    searchBodyMode = '';
+    renderSearchBody(true);
+    overlay.classList.add('is-open');
+    overlay.setAttribute('aria-hidden', 'false');
+    document.getElementById('searchBackdrop')?.classList.add('is-open');
+    const btn = document.getElementById('searchToggleBtn');
+    if (btn) { btn.classList.add('is-active'); btn.setAttribute('aria-expanded', 'true'); }
+    input.focus({ preventScroll: true });
+}
+
+function closeSearchBar(instant) {
+    const overlay = document.getElementById('searchOverlay');
+    const input = document.getElementById('searchInput');
+    if (!overlay || !input) return;
+    clearTimeout(searchDebounce); searchDebounce = null;
+    overlay.classList.remove('is-open');
+    overlay.setAttribute('aria-hidden', 'true');
+    document.getElementById('searchBackdrop')?.classList.remove('is-open');
+    const btn = document.getElementById('searchToggleBtn');
+    if (btn) { btn.classList.remove('is-active'); btn.setAttribute('aria-expanded', 'false'); }
+    input.blur();
+    input.value = '';
+    overlay.querySelector('.search-field')?.classList.remove('has-value');
+    if (!instant && searchQuery) { searchQuery = ''; renderMainMangaGrid(); }
+}
+
+window.toggleSearchBar = function() {
+    if (isSearchOpen()) closeSearchBar(); else openSearchBar();
+};
+
+window.clearSearchInput = function() {
+    const input = document.getElementById('searchInput');
+    if (!input) return;
+    input.value = '';
+    input.dispatchEvent(new Event('input'));
+    input.focus({ preventScroll: true });
 };
 
 function setupSearch() {
     const input = document.getElementById('searchInput');
-    if (!input) return;
-    let timer;
+    const body = document.getElementById('searchBody');
+    if (!input || !body) return;
     input.addEventListener('input', () => {
-        clearTimeout(timer);
-        timer = setTimeout(() => {
+        input.closest('.search-field')?.classList.toggle('has-value', input.value.length > 0);
+        renderSearchBody(false);
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(() => {
+            if (!isSearchOpen()) return;
             searchQuery = input.value.trim().toLowerCase();
             if (currentActiveView !== 'home') window.goHome();
             else renderMainMangaGrid();
         }, 150);
+    });
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            const q = input.value.trim();
+            if (!q) return;
+            const first = getSearchMatches(q)[0];
+            if (first) { e.preventDefault(); openSearchResult(first.id); }
+        }
+    });
+    body.addEventListener('click', (e) => {
+        const rm = e.target.closest('[data-remove]');
+        if (rm) {
+            e.stopPropagation();
+            removeRecentSearch(rm.getAttribute('data-remove'), rm.closest('.search-item'));
+            return;
+        }
+        if (e.target.closest('[data-clear-all]')) {
+            dustClearAll();
+            return;
+        }
+        const it = e.target.closest('.search-item[data-id]');
+        if (it) openSearchResult(it.getAttribute('data-id'));
+    });
+    body.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        const rm = e.target.closest('[data-remove]');
+        if (rm) { e.preventDefault(); rm.click(); return; }
+        const it = e.target.closest('.search-item[data-id]');
+        if (it) { e.preventDefault(); openSearchResult(it.getAttribute('data-id')); }
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && isSearchOpen()) closeSearchBar();
     });
 }
 
@@ -1358,246 +1887,383 @@ window.toggleRightSidebar = function() {
     }
 };
 
+// ============================================================================
+//  SIDEBAR SCENE - blossoming branches
+//  Every blossom / bud / leaf is positioned ON its branch's curve every frame, so they can never drift off.
+// ============================================================================
 const sidebarCanvas = document.getElementById('sidebarSakuraCanvas');
 let sCtx = sidebarCanvas ? sidebarCanvas.getContext('2d') : null;
-let sWidth, sHeight;
+let sWidth = 0, sHeight = 0, sDpr = 1;
+let sRoots = [];          // root branches
+let sBlossoms = [];       // flat list (used to let petals fall from real blossoms)
+let sPetals = [];
+let sStars = [];
+let sSprites = null;
+let sPetalTimer = 0;
+
+function mulberry32(a) {
+    return function() {
+        a |= 0; a = a + 0x6D2B79F5 | 0;
+        let t = Math.imul(a ^ a >>> 15, 1 | a);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+}
 
 function resizeSidebarCanvas() {
-    if (!sidebarCanvas) return;
-    sWidth = sidebarCanvas.width = sidebarCanvas.parentElement.clientWidth;
-    sHeight = sidebarCanvas.height = sidebarCanvas.parentElement.clientHeight;
+    if (!sidebarCanvas || !sCtx) return;
+    const w = sidebarCanvas.parentElement.clientWidth;
+    const h = sidebarCanvas.parentElement.clientHeight;
+    if (!w || !h) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (w === sWidth && h === sHeight && dpr === sDpr && sRoots.length) return;
+    sWidth = w; sHeight = h; sDpr = dpr;
+    sidebarCanvas.width = Math.round(w * dpr);
+    sidebarCanvas.height = Math.round(h * dpr);
+    sCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    initSidebarScene();       // the layout depends on the size, so rebuild: branches stay anchored to the edges
 }
-
 window.addEventListener('resize', resizeSidebarCanvas);
-if (sidebarCanvas) resizeSidebarCanvas();
 
-class BranchNode {
-    constructor(x, y, length, angle, width, depth) {
-        this.x = x;
-        this.y = y;
-        this.length = length;
-        this.angle = angle;
-        this.baseAngle = angle;
-        this.width = width;
-        this.depth = depth;
-        this.children = [];
-        this.clusters = [];
-        this.swayOffset = Math.random() * Math.PI * 2;
-        this.swaySpeed = 0.012 + Math.random() * 0.008;
-        this.buildSubBranches();
+// ---- pre-rendered sprites (cheap to draw, no per-frame shadowBlur) ----
+function makeBlossomSprite(variant) {
+    const S = 96, c = document.createElement('canvas');
+    c.width = c.height = S;
+    const x = c.getContext('2d');
+    x.translate(S / 2, S / 2);
+    const pal = [['#6fe3c9', '#f3fffb'], ['#5fd3e6', '#eefcff'], ['#b7a4ff', '#f7f2ff']][variant];
+    let g = x.createRadialGradient(0, 0, 3, 0, 0, S / 2);
+    g.addColorStop(0, 'rgba(150,255,230,0.42)');
+    g.addColorStop(1, 'rgba(150,255,230,0)');
+    x.fillStyle = g;
+    x.beginPath(); x.arc(0, 0, S / 2, 0, Math.PI * 2); x.fill();
+    for (let p = 0; p < 5; p++) {
+        x.save();
+        x.rotate(p * Math.PI * 2 / 5);
+        const pg = x.createLinearGradient(0, 0, 0, -34);
+        pg.addColorStop(0, pal[0]); pg.addColorStop(1, pal[1]);
+        x.fillStyle = pg;
+        x.beginPath();
+        x.moveTo(0, 0);
+        x.bezierCurveTo(-15, -8, -17, -28, -6, -34);
+        x.quadraticCurveTo(0, -29, 6, -34);          // the little notch of a cherry petal
+        x.bezierCurveTo(17, -28, 15, -8, 0, 0);
+        x.closePath(); x.fill();
+        x.strokeStyle = 'rgba(255,255,255,0.55)'; x.lineWidth = 0.8; x.stroke();
+        x.strokeStyle = 'rgba(14,166,145,0.35)';
+        x.beginPath(); x.moveTo(0, -5); x.lineTo(0, -24); x.stroke();
+        x.restore();
     }
-    
-    buildSubBranches() {
-        if (this.depth <= 0) return;
-        let numChildren = this.depth > 2 ? 2 : (Math.random() > 0.5 ? 1 : 2);
-        for (let i = 0; i < numChildren; i++) {
-            let angleDiff = (i === 0 ? -1 : 1) * (0.25 + Math.random() * 0.35);
-            let newLength = this.length * (0.7 + Math.random() * 0.15);
-            let newWidth = this.width * 0.62;
-            let endX = this.x + Math.cos(this.angle + angleDiff) * this.length;
-            let endY = this.y + Math.sin(this.angle + angleDiff) * this.length;
-            this.children.push(new BranchNode(endX, endY, newLength, this.angle + angleDiff, newWidth, this.depth - 1));
-        }
-        if (this.depth <= 2) {
-            let numClusters = 2 + Math.floor(Math.random() * 3);
-            for (let c = 0; c < numClusters; c++) {
-                let t = c / numClusters;
-                let cx = this.x + Math.cos(this.angle) * (this.length * t) + (Math.random() - 0.5) * 15;
-                let cy = this.y + Math.sin(this.angle) * (this.length * t) + (Math.random() - 0.5) * 15;
-                this.clusters.push(new FlowerCluster(cx, cy));
-            }
-        }
+    x.fillStyle = '#0b8a79';
+    x.beginPath(); x.arc(0, 0, 4.2, 0, Math.PI * 2); x.fill();
+    for (let i = 0; i < 8; i++) {                    // stamens
+        const a = i * 0.785 + 0.2, l = 9 + (i * 7) % 4;
+        x.strokeStyle = 'rgba(255,233,168,0.9)'; x.lineWidth = 1;
+        x.beginPath(); x.moveTo(0, 0); x.lineTo(Math.cos(a) * l, Math.sin(a) * l); x.stroke();
+        x.fillStyle = '#ffe9a8';
+        x.beginPath(); x.arc(Math.cos(a) * l, Math.sin(a) * l, 1.7, 0, Math.PI * 2); x.fill();
     }
-    
-    update(time, parentWind) {
-        this.swayOffset += this.swaySpeed;
-        let windEffect = Math.sin(time * 1.8 + this.swayOffset) * 0.045;
-        this.angle = this.baseAngle + windEffect + parentWind;
-        for (let child of this.children) {
-            child.update(time, windEffect);
-        }
-        for (let cluster of this.clusters) {
-            cluster.update(time);
-        }
-    }
-    
-    draw(ctx) {
-        ctx.beginPath();
-        ctx.moveTo(this.x, this.y);
-        let endX = this.x + Math.cos(this.angle) * this.length;
-        let endY = this.y + Math.sin(this.angle) * this.length;
-        let ctrlX = this.x + Math.cos(this.angle + 0.15) * (this.length * 0.5);
-        let ctrlY = this.y + Math.sin(this.angle + 0.15) * (this.length * 0.5);
-        
-        ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
-        ctx.strokeStyle = this.depth > 2 ? '#0a1514' : '#12231f';
-        ctx.lineWidth = this.width;
-        ctx.lineCap = 'round';
-        ctx.stroke();
-        
-        for (let child of this.children) {
-            child.x = endX;
-            child.y = endY;
-            child.draw(ctx);
-        }
-        for (let cluster of this.clusters) {
-            cluster.draw(ctx);
-        }
-    }
+    return c;
 }
 
-class FlowerCluster {
-    constructor(x, y) {
-        this.x = x;
-        this.y = y;
-        this.flowers = [];
-        let count = 4 + Math.floor(Math.random() * 4);
-        for (let i = 0; i < count; i++) {
-            this.flowers.push({
-                offsetX: (Math.random() - 0.5) * 20,
-                offsetY: (Math.random() - 0.5) * 20,
-                size: 4 + Math.random() * 4,
-                rotation: Math.random() * Math.PI,
-                pulseOffset: Math.random() * 10
+function makeBudSprite() {
+    const c = document.createElement('canvas');
+    c.width = 32; c.height = 40;
+    const x = c.getContext('2d');
+    x.translate(16, 30);
+    const g = x.createLinearGradient(0, 0, 0, -26);
+    g.addColorStop(0, '#6fe3c9'); g.addColorStop(1, '#f3fffb');
+    x.fillStyle = g;
+    x.beginPath();
+    x.moveTo(0, 0);
+    x.bezierCurveTo(-11, -6, -9, -22, 0, -27);
+    x.bezierCurveTo(9, -22, 11, -6, 0, 0);
+    x.fill();
+    x.strokeStyle = 'rgba(255,255,255,0.5)'; x.lineWidth = 0.8; x.stroke();
+    x.fillStyle = '#12806f';                         // calyx
+    x.beginPath(); x.ellipse(0, -1, 5.5, 3.2, 0, 0, Math.PI * 2); x.fill();
+    return c;
+}
+
+function makePetalSprite() {
+    const c = document.createElement('canvas');
+    c.width = 28; c.height = 36;
+    const x = c.getContext('2d');
+    x.translate(14, 32);
+    const g = x.createLinearGradient(0, 0, 0, -28);
+    g.addColorStop(0, '#6fe3c9'); g.addColorStop(1, '#f3fffb');
+    x.fillStyle = g;
+    x.beginPath();
+    x.moveTo(0, 0);
+    x.bezierCurveTo(-13, -7, -14, -23, -5, -28);
+    x.quadraticCurveTo(0, -24, 5, -28);
+    x.bezierCurveTo(14, -23, 13, -7, 0, 0);
+    x.fill();
+    return c;
+}
+
+// ---- a branch: a curved, tapering limb with blossoms, buds and leaves attached by position along its curve ----
+class SBranch {
+    constructor(spec, rng, depth) {
+        this.rel = spec.rel;            // angle relative to the parent (roots: absolute)
+        this.at = spec.at == null ? 1 : spec.at;   // where on the parent it grows from (0..1)
+        this.len = spec.len;
+        this.w = spec.w * 1.3;
+        this.wEnd = this.w * 0.58;
+        this.bend = spec.bend == null ? 0.08 : spec.bend;
+        this.depth = depth;
+        this.phase = rng() * 6.283;
+        this.speed = 0.7 + rng() * 0.45;
+        this.amp = 0.016 + depth * 0.011;
+        this.kids = (spec.kids || []).map(k => new SBranch(k, rng, depth + 1));
+        this.blossoms = [];
+        this.leaves = [];
+        const nb = spec.bl || 0;
+        for (let i = 0; i < nb; i++) {
+            this.blossoms.push({
+                t: 0.3 + 0.7 * (i + rng() * 0.7) / Math.max(nb, 1) * (nb > 1 ? 1 : 0.9),
+                n: (rng() - 0.5) * 12,
+                size: 26 + rng() * 14,
+                rot: rng() * 6.283,
+                v: rng() < 0.78 ? 0 : (rng() < 0.6 ? 1 : 2),
+                ph: rng() * 6.283,
+                wx: 0, wy: 0
             });
         }
-    }
-    
-    update(time) {
-        if (Math.random() < 0.0015 && sidebarPetals.length < 40) {
-            let f = this.flowers[Math.floor(Math.random() * this.flowers.length)];
-            sidebarPetals.push(new SidebarPetal(this.x + f.offsetX, this.y + f.offsetY));
+        if (spec.bud) this.bud = { n: 0, ph: rng() * 6.283 };
+        const nl = spec.leaf == null ? (this.w <= 5 ? 2 : 0) : spec.leaf;
+        for (let i = 0; i < nl; i++) {
+            this.leaves.push({ t: 0.25 + rng() * 0.6, side: rng() < 0.5 ? -1 : 1, len: 9 + rng() * 6, ph: rng() * 6.283 });
         }
     }
-    
-    draw(ctx) {
-        for (let f of this.flowers) {
-            let fx = this.x + f.offsetX;
-            let fy = this.y + f.offsetY;
+
+    bez(t) {
+        const u = 1 - t;
+        return [
+            u * u * this.sx + 2 * u * t * this.cx + t * t * this.ex,
+            u * u * this.sy + 2 * u * t * this.cy + t * t * this.ey,
+            2 * u * (this.cx - this.sx) + 2 * t * (this.ex - this.cx),
+            2 * u * (this.cy - this.sy) + 2 * t * (this.ey - this.cy)
+        ];
+    }
+
+    layout(time, sx, sy, rest, windAcc) {
+        const wind = Math.sin(time * this.speed + this.phase) * this.amp + Math.sin(time * 0.37 + this.phase * 0.5) * this.amp * 0.6;
+        const a = rest + windAcc + wind;
+        this.sx = sx; this.sy = sy;
+        const L = this.len;
+        this.ex = sx + Math.cos(a) * L;
+        this.ey = sy + Math.sin(a) * L;
+        this.cx = (sx + this.ex) / 2 - Math.sin(a) * this.bend * L;
+        this.cy = (sy + this.ey) / 2 + Math.cos(a) * this.bend * L;
+        for (const k of this.kids) {
+            const p = this.bez(k.at);
+            k.layout(time, p[0], p[1], rest + k.rel, windAcc + wind);
+        }
+    }
+
+    drawWood(ctx) {
+        const N = 14, up = [], dn = [];
+        for (let i = 0; i <= N; i++) {
+            const t = i / N, p = this.bez(t), l = Math.hypot(p[2], p[3]) || 1;
+            const nx = -p[3] / l, ny = p[2] / l, w = (this.w * (1 - t) + this.wEnd * t) / 2;
+            up.push([p[0] + nx * w, p[1] + ny * w]);
+            dn.push([p[0] - nx * w, p[1] - ny * w]);
+        }
+        ctx.beginPath();
+        ctx.moveTo(up[0][0], up[0][1]);
+        for (let i = 1; i <= N; i++) ctx.lineTo(up[i][0], up[i][1]);
+        for (let i = N; i >= 0; i--) ctx.lineTo(dn[i][0], dn[i][1]);
+        ctx.closePath();
+        ctx.fillStyle = this.depth === 0 ? '#2a554a' : '#2f5c50';
+        ctx.fill();
+        ctx.beginPath();                                       // soft rim light on one side of the bark
+        ctx.moveTo(up[0][0], up[0][1]);
+        for (let i = 1; i <= N; i++) ctx.lineTo(up[i][0], up[i][1]);
+        ctx.strokeStyle = 'rgba(150,245,220,0.42)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        for (const k of this.kids) {
+            ctx.beginPath();                                   // blend the joint
+            ctx.arc(k.sx, k.sy, k.w / 2, 0, Math.PI * 2);
+            ctx.fillStyle = '#2f5c50';
+            ctx.fill();
+            k.drawWood(ctx);
+        }
+    }
+
+    drawLeaves(ctx, time) {
+        for (const lf of this.leaves) {
+            const p = this.bez(lf.t), a = Math.atan2(p[3], p[2]) + lf.side * (0.9 + Math.sin(time * 1.2 + lf.ph) * 0.08);
             ctx.save();
-            ctx.translate(fx, fy);
-            ctx.rotate(f.rotation + Math.sin(Date.now() * 0.002 + f.pulseOffset) * 0.15);
-            for (let p = 0; p < 5; p++) {
-                ctx.rotate((Math.PI * 2) / 5);
-                ctx.beginPath();
-                ctx.fillStyle = '#b9f5e6';
-                ctx.shadowColor = '#3fd9bd';
-                ctx.shadowBlur = 4;
-                ctx.ellipse(0, -f.size * 0.55, f.size * 0.32, f.size * 0.55, 0, 0, Math.PI * 2);
-                ctx.fill();
-            }
+            ctx.translate(p[0], p[1]);
+            ctx.rotate(a);
+            const L = lf.len;
+            const g = ctx.createLinearGradient(0, 0, L, 0);
+            g.addColorStop(0, '#0e5d52'); g.addColorStop(1, '#2bb89c');
+            ctx.fillStyle = g;
             ctx.beginPath();
-            ctx.arc(0, 0, f.size * 0.18, 0, Math.PI * 2);
-            ctx.fillStyle = '#0ea691';
+            ctx.moveTo(0, 0);
+            ctx.quadraticCurveTo(L * 0.5, -L * 0.42, L, 0);
+            ctx.quadraticCurveTo(L * 0.5, L * 0.42, 0, 0);
             ctx.fill();
             ctx.restore();
         }
+        for (const k of this.kids) k.drawLeaves(ctx, time);
+    }
+
+    drawFlowers(ctx, time) {
+        for (const b of this.blossoms) {
+            const p = this.bez(b.t), l = Math.hypot(p[2], p[3]) || 1;
+            b.wx = p[0] - (p[3] / l) * b.n;
+            b.wy = p[1] + (p[2] / l) * b.n;
+            const s = b.size * (1 + Math.sin(time * 1.3 + b.ph) * 0.035);
+            ctx.save();
+            ctx.translate(b.wx, b.wy);
+            ctx.rotate(b.rot + Math.sin(time * 0.8 + b.ph) * 0.12);
+            ctx.drawImage(sSprites.blossom[b.v], -s / 2, -s / 2, s, s);
+            ctx.restore();
+        }
+        if (this.bud) {
+            const p = this.bez(1), a = Math.atan2(p[3], p[2]);
+            ctx.save();
+            ctx.translate(p[0], p[1]);
+            ctx.rotate(a + Math.PI / 2 + Math.sin(time + this.bud.ph) * 0.1);
+            ctx.drawImage(sSprites.bud, -7, -17, 14, 17.5);
+            ctx.restore();
+        }
+        for (const k of this.kids) k.drawFlowers(ctx, time);
+    }
+
+    collect(list) {
+        for (const b of this.blossoms) list.push(b);
+        for (const k of this.kids) k.collect(list);
     }
 }
 
-class SidebarPetal {
-    constructor(x, y) {
-        this.x = x || Math.random() * sWidth;
-        this.y = y || Math.random() * sHeight * 0.4;
-        this.size = 3 + Math.random() * 4;
-        this.speedX = Math.random() * 0.8 + 0.4;
-        this.speedY = Math.random() * 0.6 + 0.3;
-        this.angle = Math.random() * Math.PI * 2;
-        this.spinSpeed = (Math.random() - 0.5) * 0.05;
-        this.oscillationSpeed = 0.02 + Math.random() * 0.02;
-        this.initialX = this.x;
-        this.age = 0;
-        this.maxAge = 350 + Math.random() * 200;
-        this.opacity = 0;
+class SPetal {
+    constructor(x, y, rng) { this.reset(x, y, rng); }
+    reset(x, y, rng) {
+        this.x = x; this.y = y;
+        this.s = 11 + rng() * 8;
+        this.vy = 0.28 + rng() * 0.32;
+        this.ph = rng() * 6.283;
+        this.rot = rng() * 6.283;
+        this.vr = (rng() - 0.5) * 0.045;
+        this.life = 0;
+        this.max = 380 + rng() * 240;
     }
-    
     update(time) {
-        this.age++;
-        if (this.opacity < 1) this.opacity += 0.02;
-        let windForce = 1.0 + Math.sin(time * 1.2 + this.initialX * 0.01) * 0.4;
-        this.speedX = windForce + Math.cos(time * this.oscillationSpeed) * 0.3;
-        this.speedY = 0.7 + Math.sin(time * 0.8 + this.initialX) * 0.2;
-        this.x += this.speedX;
-        this.y += this.speedY;
-        this.angle += this.spinSpeed;
-        if (this.y > sHeight + 20 || this.x > sWidth + 20 || this.age > this.maxAge) {
-            this.reset();
-        }
+        this.life++;
+        this.x += Math.sin(time * 0.9 + this.ph) * 0.38 - 0.16;      // drifts gently, slightly to the left
+        this.y += this.vy;
+        this.rot += this.vr;
     }
-    
-    reset() {
-        this.x = -20 + Math.random() * (sWidth + 20);
-        this.y = -10 - Math.random() * 30;
-        this.size = 3 + Math.random() * 4;
-        this.speedX = Math.random() * 0.8 + 0.4;
-        this.speedY = Math.random() * 0.6 + 0.3;
-        this.angle = Math.random() * Math.PI * 2;
-        this.spinSpeed = (Math.random() - 0.5) * 0.05;
-        this.initialX = this.x;
-        this.age = 0;
-        this.maxAge = 350 + Math.random() * 200;
-        this.opacity = 0;
-    }
-    
-    draw(ctx) {
+    get alive() { return this.life < this.max && this.y < sHeight + 24 && this.x > -24 && this.x < sWidth + 24; }
+    draw(ctx, time) {
+        const fadeIn = Math.min(1, this.life / 35), fadeOut = Math.min(1, (this.max - this.life) / 70);
         ctx.save();
+        ctx.globalAlpha = Math.max(0, Math.min(fadeIn, fadeOut)) * 0.85;
         ctx.translate(this.x, this.y);
-        ctx.rotate(this.angle);
-        ctx.globalAlpha = Math.min(1, this.opacity) * 0.75;
-        ctx.beginPath();
-        ctx.fillStyle = '#b9f5e6';
-        ctx.shadowColor = '#3fd9bd';
-        ctx.shadowBlur = 4;
-        ctx.ellipse(0, 0, this.size * 0.38, this.size, 0, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.rotate(this.rot);
+        ctx.scale(0.45 + Math.abs(Math.cos(time * 1.6 + this.ph)) * 0.55, 1);     // petal "flips" as it falls
+        ctx.drawImage(sSprites.petal, -this.s * 0.4, -this.s * 0.9, this.s * 0.8, this.s);
         ctx.restore();
     }
 }
 
-let sidebarBranches = [];
-let sidebarPetals = [];
-let sStartTime = Date.now();
-
 function initSidebarScene() {
-    if (!sidebarCanvas) return;
-    sidebarBranches = [];
-    sidebarPetals = [];
-    if (!sWidth || !sHeight) resizeSidebarCanvas();
-    sidebarBranches.push(new BranchNode(sWidth + 10, -10, 180, 2.6, 18, 3));
-    sidebarBranches.push(new BranchNode(-10, sHeight + 10, 150, -0.6, 15, 2));
-    let totalPetals = 20;
-    for (let i = 0; i < totalPetals; i++) {
-        let p = new SidebarPetal();
-        p.y = Math.random() * sHeight;
-        p.x = Math.random() * sWidth;
-        sidebarPetals.push(p);
-    }
+    if (!sidebarCanvas || !sWidth || !sHeight) return;
+    if (!sSprites) sSprites = { blossom: [makeBlossomSprite(0), makeBlossomSprite(1), makeBlossomSprite(2)], bud: makeBudSprite(), petal: makePetalSprite() };
+    const W = sWidth, H = sHeight, rng = mulberry32(20261103);
+    // angle 0 = right, PI = left.  SMALLER than PI = pointing down-left, LARGER than PI = pointing up-left.
+    const specs = [
+        // 1) main branch from the top-right corner, drooping over the menu
+        { x: W + 18, y: H * 0.05, rel: Math.PI - 0.10, len: W * 0.52, w: 11, bend: -0.10, bl: 2, leaf: 0, kids: [
+            { at: 1, rel: -0.34, len: W * 0.40, w: 7, bend: 0.10, bl: 3, kids: [
+                { at: 1,   rel: -0.42, len: W * 0.27, w: 4,   bl: 5, bud: true },
+                { at: 0.55, rel: 0.55, len: W * 0.24, w: 3.6, bl: 4, bud: true } ] },
+            { at: 0.45, rel: -0.78, len: W * 0.34, w: 5.5, bend: -0.12, bl: 4, kids: [
+                { at: 1, rel: 0.45, len: W * 0.2, w: 3.4, bl: 4, bud: true } ] },
+            { at: 0.72, rel: 0.62, len: W * 0.24, w: 4.4, bl: 4, bud: true }
+        ] },
+        // 2) lower branch from the right edge
+        { x: W + 18, y: H * 0.27, rel: Math.PI + 0.22, len: W * 0.42, w: 8, bend: 0.1, bl: 2, leaf: 0, kids: [
+            { at: 1,   rel: -0.52, len: W * 0.30, w: 4.6, bl: 5, bud: true },
+            { at: 0.5, rel: 0.62,  len: W * 0.23, w: 3.8, bl: 4, bud: true }
+        ] },
+        // 3) bottom-left branch growing up toward the footer
+        { x: -18, y: H * 0.965, rel: -0.50, len: W * 0.50, w: 10, bend: -0.08, bl: 2, leaf: 0, kids: [
+            { at: 1,    rel: -0.36, len: W * 0.40, w: 6.4, bl: 3, kids: [
+                { at: 1,   rel: -0.42, len: W * 0.25, w: 3.8, bl: 5, bud: true },
+                { at: 0.55, rel: 0.7,  len: W * 0.22, w: 3.6, bl: 4, bud: true } ] },
+            { at: 0.5,  rel: -0.95, len: W * 0.28, w: 4.8, bl: 4, bud: true }
+        ] },
+        // 4) small branch, bottom-right
+        { x: W + 18, y: H * 0.89, rel: Math.PI + 0.42, len: W * 0.30, w: 5.5, bend: 0.1, bl: 4, bud: true, kids: [
+            { at: 0.6, rel: -0.6, len: W * 0.16, w: 3.2, bl: 3, bud: true } ] }
+    ];
+    sRoots = specs.map(s => { const b = new SBranch(s, rng, 0); b.rootX = s.x; b.rootY = s.y; b.rootA = s.rel; return b; });
+    sBlossoms = [];
+    sRoots.forEach(r => r.collect(sBlossoms));
+
+    sPetals = [];
+    for (let i = 0; i < 12; i++) sPetals.push(new SPetal(rng() * W, rng() * H, rng));
+
+    sStars = [];
+    for (let i = 0; i < 22; i++) sStars.push({ x: rng() * W, y: H * (0.18 + rng() * 0.8), r: 0.6 + rng() * 1.2, ph: rng() * 6.283, sp: 0.8 + rng() * 1.6 });
 }
 
-if (sidebarCanvas) {
-    initSidebarScene();
+if (sidebarCanvas && sCtx) {
+    resizeSidebarCanvas();
     const sidebarEl = document.getElementById('rightSidebar');
+    const sRand = mulberry32(777);
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     function animateSidebar() {
         // Don't burn CPU/battery while the sidebar is closed or the tab is hidden
-        if (document.hidden || (sidebarEl && sidebarEl.classList.contains('translate-x-full'))) {
+        if (document.hidden || !sRoots.length || (sidebarEl && sidebarEl.classList.contains('translate-x-full'))) {
             requestAnimationFrame(animateSidebar);
             return;
         }
-        let time = (Date.now() - sStartTime) * 0.001;
-        sCtx.clearRect(0, 0, sWidth, sHeight);
-        let bgGrad = sCtx.createLinearGradient(0, 0, 0, sHeight);
-        bgGrad.addColorStop(0, '#050d10');
-        bgGrad.addColorStop(1, '#0a1f22');
-        sCtx.fillStyle = bgGrad;
-        sCtx.fillRect(0, 0, sWidth, sHeight);
-        for (let branch of sidebarBranches) {
-            branch.update(time, 0);
-            branch.draw(sCtx);
+        const time = reduceMotion ? 0 : Date.now() * 0.001;
+        const ctx = sCtx, W = sWidth, H = sHeight;
+        ctx.clearRect(0, 0, W, H);
+
+        // night sky + soft glows
+        const bg = ctx.createLinearGradient(0, 0, 0, H);
+        bg.addColorStop(0, '#050d10'); bg.addColorStop(0.55, '#07161a'); bg.addColorStop(1, '#0a2024');
+        ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+        let g = ctx.createRadialGradient(W * 0.22, H * 0.16, 0, W * 0.22, H * 0.16, W * 0.85);
+        g.addColorStop(0, 'rgba(95,224,194,0.17)'); g.addColorStop(1, 'rgba(95,224,194,0)');
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+        g = ctx.createRadialGradient(W, H * 0.86, 0, W, H * 0.86, W * 0.9);
+        g.addColorStop(0, 'rgba(150,120,240,0.14)'); g.addColorStop(1, 'rgba(150,120,240,0)');
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+        for (const s of sStars) {
+            ctx.globalAlpha = 0.25 + 0.55 * (0.5 + 0.5 * Math.sin(time * s.sp + s.ph));
+            ctx.fillStyle = '#d9fff5';
+            ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
         }
-        for (let petal of sidebarPetals) {
-            petal.update(time);
-            petal.draw(sCtx);
+        ctx.globalAlpha = 1;
+
+        // branches -> leaves -> blossoms (everything computed from the same pose, so it always lines up)
+        for (const r of sRoots) r.layout(time, r.rootX, r.rootY, r.rootA, 0);
+        for (const r of sRoots) r.drawWood(ctx);
+        for (const r of sRoots) r.drawLeaves(ctx, time);
+        for (const r of sRoots) r.drawFlowers(ctx, time);
+
+        // petals fall from real blossoms
+        if (!reduceMotion) {
+            if (--sPetalTimer <= 0 && sPetals.length < 34 && sBlossoms.length) {
+                const b = sBlossoms[Math.floor(sRand() * sBlossoms.length)];
+                sPetals.push(new SPetal(b.wx, b.wy, sRand));
+                sPetalTimer = 22 + Math.floor(sRand() * 30);
+            }
+            for (const p of sPetals) p.update(time);
+            sPetals = sPetals.filter(p => p.alive);
         }
+        for (const p of sPetals) p.draw(ctx, time);
+
         requestAnimationFrame(animateSidebar);
     }
     animateSidebar();
