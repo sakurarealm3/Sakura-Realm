@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <link rel="preload" as="image" href="reze.webp" type="image/webp">
     <meta name="theme-color" content="#060e10">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="apple-touch-icon" href="icon-192.png">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sakura Realm - Main Web & Chapter Lobby</title>
          
@@ -243,20 +245,10 @@
                     <i class="fa-solid fa-xmark text-sm"></i>
                 </button>
             </div>
-            <nav class="flex flex-col gap-3 font-semibold text-sm text-slate-200">
-                <a href="#" onclick="toggleRightSidebar(); goHome();" class="flex items-center gap-3 px-4 py-3 rounded-xl bg-dark-card hover:bg-sakura-500/20 hover:text-sakura-400 transition border border-sakura-500/15">
-                    <i class="fa-solid fa-house w-5 text-sakura-500"></i> Home Lobby
-                </a>
-                <a href="#" onclick="toggleRightSidebar(); navigateToView('genres', 'all', 'Browse Genres');" class="flex items-center gap-3 px-4 py-3 rounded-xl bg-dark-card hover:bg-sakura-500/20 hover:text-sakura-400 transition border border-sakura-500/15">
-                    <i class="fa-solid fa-tags w-5 text-sakura-500"></i> Browse Genres
-                </a>
-                <a href="#" onclick="toggleRightSidebar(); navigateToView('latest', 'updates', 'Latest Updates');" class="flex items-center gap-3 px-4 py-3 rounded-xl bg-dark-card hover:bg-sakura-500/20 hover:text-sakura-400 transition border border-sakura-500/15">
-                    <i class="fa-solid fa-fire w-5 text-sakura-500"></i> Latest Updates
-                </a>
-            </nav>
+            <nav class="flex flex-col gap-3 font-semibold text-sm text-slate-200"></nav>   <!-- Home Lobby / Browse Genres / Latest Updates boxes removed -->
         </div>
-        <div class="text-center text-[10px] text-slate-400 border-t border-sakura-500/20 pt-4 relative z-10">
-            Sakura Realm v5.5 - Realtime Firebase Sync Active
+        <div class="sidebar-welcome border-t border-sakura-500/20 pt-4 relative z-10">
+            Welcome To Sakura Realm
         </div>
     </aside>
 
@@ -412,11 +404,133 @@
             </div>
         </section>
 
+        <!-- VIEW 5: HISTORY (empty black page for now) -->
+        <section id="historyView" class="view-section hidden">
+            <div class="hx-wrap">
+                <h2 class="hx-title"><span class="hx-title-bar"></span>Latest Reading</h2>
+
+                <div id="hxCard" class="hx-card is-empty" role="button" tabindex="0">
+                    <div class="hx-glow"></div>
+                    <div class="hx-embers" id="hxEmbers" aria-hidden="true"></div>
+                    <div class="hx-info">
+                        <span class="hx-cover"><span id="hxThumb" class="hx-thumb"></span></span>
+                        <span id="hxName" class="hx-name">Nothing read yet</span>
+                        <span id="hxChap" class="hx-chap" hidden><i class="fa-solid fa-book-open"></i><span id="hxChapText"></span></span>
+                    </div>
+                    <img class="hx-makima" src="makima.webp" alt="" draggable="false">
+                </div>
+
+                <div class="hx-slight" aria-hidden="true"><i></i></div>
+
+                <h2 class="hx-title"><span class="hx-title-bar"></span>Download Management</h2>
+                <div id="dmList" class="dm-list"></div>
+            </div>
+        </section>
+
+        <!-- VIEW 6: SETTINGS (Data Storage Manager) -->
+        <section id="settingsView" class="view-section hidden">
+            <div class="hx-wrap">
+                <h2 class="hx-title"><span class="hx-title-bar"></span>Data Storage Manager</h2>
+
+                <div class="st-file">
+                    <span class="st-tab"><i class="fa-solid fa-database"></i> Data Storage</span>
+                    <div class="st-body">
+                        <div class="st-head"><b id="stFree">--</b><span id="stFreeOf">used by this site</span></div>
+                        <div class="st-bar" id="stBar" aria-hidden="true"><i class="seg-dl"></i><i class="seg-other"></i></div>
+                        <ul class="st-legend">
+                            <li><span class="dot dl"></span><span class="lg">Downloaded chapters</span><em id="stDl">--</em></li>
+                            <li><span class="dot other"></span><span class="lg">Cache data</span><em id="stOther">--</em></li>
+                        </ul>
+                        <div class="st-chap">
+                            <i class="fa-solid fa-file-zipper"></i>
+                            <span id="stChap">0 chapters downloaded</span>
+                            <b id="stChapSize">0 KB</b>
+                        </div>
+                        <p class="st-note" id="stNote"></p>
+                    </div>
+                </div>
+
+                <div class="st-actions">
+                    <button type="button" id="stClearAll" class="st-btn danger"><i class="fa-solid fa-trash-can"></i><span>Clear All Data</span></button>
+                    <button type="button" id="stClearCache" class="st-btn"><i class="fa-solid fa-broom"></i><span>Clear Cache</span></button>
+                </div>
+
+                <h2 class="hx-title st-mgmt-title"><span class="hx-title-bar"></span>Setting Management</h2>
+                <div class="st-sub">User Setting</div>
+                <div class="st-list">
+                    <div class="st-row">
+                        <span class="st-row-ico"><i class="fa-solid fa-cloud-arrow-down"></i></span>
+                        <span class="st-row-txt"><b>Auto Download</b><small>Save the chapter you are reading for offline</small></span>
+                        <button type="button" class="st-switch" role="switch" aria-checked="false" aria-label="Auto Download" data-set="autoDl"><i></i></button>
+                    </div>
+                    <div class="st-row">
+                        <span class="st-row-ico"><i class="fa-solid fa-sun"></i></span>
+                        <span class="st-row-txt"><b>Keep Screen On</b><small>Screen stays awake while reading</small></span>
+                        <button type="button" class="st-switch" role="switch" aria-checked="false" aria-label="Keep Screen On" data-set="keepAwake"><i></i></button>
+                    </div>
+                    <div class="st-row">
+                        <span class="st-row-ico"><i class="fa-solid fa-gauge-high"></i></span>
+                        <span class="st-row-txt"><b>Low-end Mode</b><small>Smoother on slow phones: no blur, no petals, light animations</small></span>
+                        <button type="button" class="st-switch" role="switch" aria-checked="false" aria-label="Low-end Mode" data-set="lite"><i></i></button>
+                    </div>
+                    <div class="st-row">
+                        <span class="st-row-ico"><i class="fa-solid fa-leaf"></i></span>
+                        <span class="st-row-txt"><b>Battery Saver</b><small>Fewer animations, less battery use</small></span>
+                        <button type="button" class="st-switch" role="switch" aria-checked="false" aria-label="Battery Saver" data-set="battery"><i></i></button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- VIEW 4: READER VIEW -->
         <section id="readerView" class="view-section hidden fixed inset-0 z-50 bg-black overflow-y-auto overflow-x-hidden w-full min-h-screen p-0 m-0">
             <div id="readerPagesContainer" onclick="handleReaderScreenTap(event)" class="w-full min-h-screen flex flex-col items-center justify-start p-0 m-0 space-y-0 bg-black cursor-pointer"></div>
         </section>
     </main>
+
+    <!-- HOME QUICK DOCK: fixed to the screen corner (does not scroll with the page). Visible on Home only. -->
+    <div id="homeDock" class="home-dock" data-open="false" aria-hidden="true">
+        <div class="dock-bar" id="dockBar" role="menu">
+            <button type="button" class="dock-item" role="menuitem" onclick="openLibrarySheet('bookmark')" style="--k:0">
+                <i class="fa-solid fa-bookmark"></i><span>Bookmark</span>
+            </button>
+            <button type="button" class="dock-item" role="menuitem" onclick="openHistoryPage()" style="--k:1">
+                <i class="fa-solid fa-clock-rotate-left"></i><span>History</span>
+            </button>
+            <button type="button" class="dock-item" role="menuitem" onclick="openSettingsPage()" style="--k:2">
+                <i class="fa-solid fa-sliders"></i><span>Setting</span>
+            </button>
+        </div>
+        <button type="button" id="dockFab" class="dock-fab" onclick="toggleDock()" aria-label="Quick menu" aria-expanded="false">
+            <i class="fa-solid fa-gear"></i>
+        </button>
+    </div>
+
+    <!-- Confirm dialog (Settings) -->
+    <div id="stBackdrop" class="st-backdrop"></div>
+    <div id="stConfirm" class="st-confirm" role="dialog" aria-modal="true" aria-hidden="true">
+        <div class="st-confirm-ico"><i id="stConfirmIcon" class="fa-solid fa-trash-can"></i></div>
+        <h3 id="stConfirmTitle">Clear?</h3>
+        <p id="stConfirmText"></p>
+        <div class="st-confirm-btns">
+            <button type="button" id="stConfirmNo" class="st-btn">Cancel</button>
+            <button type="button" id="stConfirmYes" class="st-btn danger">Confirm</button>
+        </div>
+    </div>
+
+    <!-- Bookmark / History sheet -->
+    <div id="libBackdrop" class="lib-backdrop" onclick="closeLibrarySheet()"></div>
+    <div id="libSheet" class="lib-sheet" role="dialog" aria-modal="true" aria-hidden="true">
+        <div class="lib-head">
+            <span class="lib-title"><i id="libIcon" class="fa-solid fa-bookmark"></i> <span id="libTitleText">Bookmark</span></span>
+            <div class="lib-head-actions">
+                <button type="button" class="lib-close" onclick="closeLibrarySheet()" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+        </div>
+        <div id="libList" class="lib-list"></div>
+    </div>
+
+    <div id="toastHost" class="toast-host" aria-live="polite"></div>
 
     <!-- Main Logic and Firebase Connector Module -->
     <script type="module" src="script.js"></script>
