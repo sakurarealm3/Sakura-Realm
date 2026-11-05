@@ -2954,7 +2954,7 @@ function showToast(text, kind) {
 
 // ============================================================================
 //  DOWNLOAD MANAGER
-//  Download button (chapter list) -> fetches every page -> packs a .zip -> saves it to the device.
+//  Download button (chapter list) -> fetches every page -> saves it inside the app only (no .zip in the phone's storage).
 //  The History page lists each download: Downloading... (live progress) / Downloaded / Failed.
 // ============================================================================
 const DL_KEY = "sakura_downloads_v1";
@@ -3126,24 +3126,14 @@ async function startDownload(mangaId, chapterId, opts = {}) {
         };
         await Promise.all([worker(), worker(), worker()]);
 
-        let zipSize = size;
-        if (!opts.auto) {                                  // manual download also saves the .zip to the phone; auto download keeps only the offline copy
-            const zip = buildZip(files);
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(zip);
-            a.download = dlSafeName(manga.title) + ' - ' + dlSafeName(ch.title) + '.zip';
-            document.body.appendChild(a); a.click(); a.remove();
-            setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-            zipSize = zip.size;
-        }
-
-        // keep the pages on the device for offline reading
+        // The chapter is kept ONLY inside the app's private storage (IndexedDB), never as a .zip / image files
+        // in the phone's Downloads folder, so it cannot be picked up with a file manager and re-uploaded.
         try {
             await offPut({ id, m: mangaId, c: chapterId, n: blobs.length, blobs, t: Date.now() });
             entry.off = true;
-        } catch (e) { entry.off = false; }
+        } catch (e) { throw new Error('Could not save offline (storage full or private mode)'); }
 
-        entry.status = 'done'; entry.size = zipSize; entry.t = Date.now();
+        entry.status = 'done'; entry.size = size; entry.t = Date.now();
         dlSetEntry(entry);
         showToast('Downloading Done', 'ok');
     } catch (err) {
