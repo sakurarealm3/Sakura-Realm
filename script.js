@@ -1,6 +1,6 @@
 // --- Firebase Config & SDK Imports ---
 import { initializeApp } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
-import { getDatabase, ref, onValue, update, increment } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-database.js";
+import { getDatabase, ref, onValue, update, increment, set, remove } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBAyTxN3YWVFzkmyAsd6SWF8f2YYpbc0T8",
@@ -20,6 +20,19 @@ const database = getDatabase(app);
 const SHARED_STORAGE_KEY = "sakura_shared_master_mangas_v1";
 const PREFS_KEY = "sakura_reader_prefs_v1";
 const BOOKMARK_KEY = "sakura_bookmarks_v1";
+const USER_SET_KEY = "sakura_user_settings_v1";
+// User settings (all OFF by default)
+const userSettings = Object.assign({ autoDl: false, keepAwake: false, battery: false, lite: undefined }, safeGet(USER_SET_KEY, {}));
+delete userSettings.notify; delete userSettings.fcmKey; delete userSettings.fcmAt;
+// Low-end Mode: switched on automatically on weak phones (<=2 GB RAM / <=2 CPU cores) until the user chooses
+if (typeof userSettings.lite !== 'boolean') {
+    userSettings.lite = (navigator.deviceMemory && navigator.deviceMemory <= 2) || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 2) || false;
+}
+const perfLow = () => !!(userSettings.battery || userSettings.lite);
+let currentViewId = '';
+let wakeLock = null;
+document.documentElement.classList.toggle('battery-saver', !!userSettings.battery);
+document.documentElement.classList.toggle('lite', !!userSettings.lite);
 
 // --- Safe helpers (storage + HTML escaping) ---
 function safeGet(key, fallback) {
@@ -283,6 +296,12 @@ function hasNewChapter(manga) {
     return t > 0 && (Date.now() - t) < 24 * 60 * 60 * 1000;
 }
 
+// A single chapter is "New" for 24 hours after it was uploaded (the tag switches itself off after that)
+function isChapterNew(ch) {
+    const t = Number(ch && ch.created) || 0;
+    return t > 0 && (Date.now() - t) < 24 * 60 * 60 * 1000;
+}
+
 function currentDetailId() {
     const h = window.location.hash;
     return h.startsWith('#detail-') ? h.slice('#detail-'.length) : '';
@@ -443,7 +462,7 @@ function renderHotShowcase() {
         const mangaStatus = manga.status || 'Ongoing';
         card.innerHTML = `
             <div class="absolute inset-0 bg-gradient-to-t from-dark-base via-dark-card/40 to-transparent z-10"></div>
-            <div class="absolute inset-0 bg-cover bg-center group-hover:scale-105 transition duration-500" style='background-image: ${esc(cssUrl(manga.image))}'></div>
+            <div class="absolute inset-0 bg-cover bg-center" style='background-image: ${esc(cssUrl(manga.image))}'></div>
             <div class="absolute top-2.5 left-2.5 z-20">
                 <span class="px-2 py-0.5 rounded-md bg-dark-card/90 text-white font-bold text-[9px] border border-dark-border shadow-sm">HOT #${index + 1}</span>
             </div>
@@ -461,10 +480,31 @@ const LATEST_HERO_MS = 3800;
 let latestHeroIdx = 0;
 let latestHeroTimer = null;
 let latestHeroKey = '';
+let latestHeroDragging = false;
+let latestHeroMoved = false;
+
+let latestTickLabel = null;
+function latestHaptic() {
+    // Android / Chrome: real vibration
+    try { if (navigator.vibrate && navigator.vibrate(30)) return; } catch (_) {}
+    // iPhone Safari has no vibrate(): toggling a hidden native "switch" checkbox gives the system tick instead
+    try {
+        if (!latestTickLabel) {
+            latestTickLabel = document.createElement('label');
+            latestTickLabel.setAttribute('aria-hidden', 'true');
+            latestTickLabel.style.cssText = 'position:fixed;left:-200px;top:0;width:40px;height:20px;opacity:0.01;pointer-events:none;';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox'; cb.setAttribute('switch', ''); cb.tabIndex = -1;
+            latestTickLabel.appendChild(cb);
+            document.body.appendChild(latestTickLabel);
+        }
+        latestTickLabel.click();
+    } catch (_) {}
+}
 
 function latestHeroAutoplay() {
     const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    return !reduce && document.querySelectorAll('#latestHeroSlides .lh-slide').length > 1;
+    return !reduce && !perfLow() && document.querySelectorAll('#latestHeroSlides .lh-slide').length > 1;
 }
 
 function showLatestSlide(i) {
@@ -489,6 +529,7 @@ function startLatestHeroTimer() {
     latestHeroTimer = setInterval(() => {
         const home = document.getElementById('homeView');
         if (document.hidden || !home || home.classList.contains('hidden')) return;   // only run while Home is on screen
+        if (latestHeroDragging) return;                                              // finger is on the cover
         showLatestSlide(latestHeroIdx + 1);
     }, LATEST_HERO_MS);
 }
@@ -518,7 +559,7 @@ function renderLatestHero() {
     if (!wrap || !dotsBox) return;
 
     // newest upload first: brand-new manga AND manga that just got a new chapter
-    const list = [...loadSharedMangas()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 6);
+    const list = [...loadSharedMangas()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 5);
     // Rebuild only when something visible changed (view counts etc. must not restart the carousel)
     const key = list.map(m => [m.id, m.updatedAt || 0, m.createdAt || 0, m.lastChapterAt || 0, m.latestChapterTitle || '', m.image].join('~')).join('|');
     if (key === latestHeroKey && (wrap.children.length || !list.length)) return;
@@ -589,7 +630,7 @@ function renderLatestHero() {
         info.appendChild(meta);
         slide.appendChild(info);
 
-        slide.onclick = () => window.navigateToView('detail', m.id, m.title);
+        slide.onclick = () => { if (latestHeroMoved) { latestHeroMoved = false; return; } window.navigateToView('detail', m.id, m.title); };
         slide.onkeydown = (e) => { if (e.key === 'Enter') slide.click(); };
         wrap.appendChild(slide);
 
@@ -597,14 +638,114 @@ function renderLatestHero() {
         blk.type = 'button';
         blk.className = 'lh-block';
         blk.setAttribute('aria-label', `Show update ${i + 1}`);
-        blk.onclick = () => { showLatestSlide(i); startLatestHeroTimer(); };
+        blk.onclick = () => { if (i !== latestHeroIdx) latestHaptic(); showLatestSlide(i); startLatestHeroTimer(); };
         dotsBox.appendChild(blk);
     });
     const glider = document.createElement('span');
     glider.className = 'lh-glider';
     glider.setAttribute('aria-hidden', 'true');
     dotsBox.appendChild(glider);
+    bindLatestHeroDrag(wrap);
     startLatestHeroTimer();
+}
+
+// ===== Drag / swipe the cover (manual): NO fade. The held cover only tilts a little, the next cover
+// peeks in from the opposite side (tilted), and on release the held cover slips in behind the new one. =====
+function bindLatestHeroDrag(wrap) {
+    if (wrap.dataset.dragBound) return;
+    wrap.dataset.dragBound = '1';
+    let startX = 0, dx = 0, pid = null, t0 = 0, cur = null, inc = null, incIdx = -1, dir = 0, w = 1, busy = false;
+    const EASE = 'transform 0.45s cubic-bezier(0.22, 1, 0.36, 1)';
+
+    const slidesList = () => document.querySelectorAll('#latestHeroSlides .lh-slide');
+    const wipe = (el) => { if (el) { el.style.transition = ''; el.style.transform = ''; el.style.opacity = ''; el.style.zIndex = ''; } };
+    const wipeQuiet = (...els) => {                          // clear inline styles with no transition (so nothing fades)
+        wrap.classList.add('lh-nofx');
+        els.forEach(wipe);
+        void wrap.offsetWidth;
+        wrap.classList.remove('lh-nofx');
+    };
+    // held cover: lifts + tilts toward its own side, limited (does not follow the finger freely)
+    const curPose = (q) => `translateX(${-dir * q * 9}%) rotate(${-dir * q * 7}deg) scale(1.04)`;
+    // incoming cover: waits behind the held one, then leans out from the opposite side, tilted
+    const incPose = (q) => `translateX(${dir * (2 + q * 16)}%) rotate(${dir * q * 8}deg) scale(0.95)`;
+
+    wrap.addEventListener('pointerdown', (e) => {
+        if (busy || pid !== null) return;
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        if (slidesList().length < 2) return;
+        pid = e.pointerId; startX = e.clientX; dx = 0; t0 = Date.now();
+        cur = wrap.querySelector('.lh-slide.active');
+        inc = null; incIdx = -1; dir = 0;
+        w = wrap.getBoundingClientRect().width || 1;
+        latestHeroMoved = false;
+    });
+
+    wrap.addEventListener('pointermove', (e) => {
+        if (e.pointerId !== pid || !cur) return;
+        dx = e.clientX - startX;
+        if (!latestHeroDragging) {
+            if (Math.abs(dx) < 6) return;
+            latestHeroDragging = true; latestHeroMoved = true;
+            try { wrap.setPointerCapture(pid); } catch (_) {}
+            cur.style.transition = 'none';
+        }
+        const slides = slidesList();
+        const newDir = dx < 0 ? 1 : -1;                       // drag left -> next cover (enters from right); drag right -> previous (enters from left)
+        if (newDir !== dir) {
+            wipeQuiet(inc);
+            dir = newDir;
+            incIdx = ((latestHeroIdx + dir) % slides.length + slides.length) % slides.length;
+            inc = slides[incIdx];
+            inc.style.transition = 'none';
+            inc.style.opacity = '1';                          // shown by position only, never faded
+            inc.style.zIndex = '1';                           // behind the held cover for now
+        }
+        const q = Math.min(Math.abs(dx) / (w * 0.5), 1);
+        cur.style.transform = curPose(q);
+        inc.style.transform = incPose(q);
+    });
+
+    const finish = (e) => {
+        if (e.pointerId !== pid) return;
+        const wasDragging = latestHeroDragging;
+        try { wrap.releasePointerCapture(pid); } catch (_) {}
+        pid = null;
+        if (!wasDragging || !cur) { cur = null; return; }
+        const fast = Math.abs(dx) / Math.max(Date.now() - t0, 1) > 0.45;
+        const commit = e.type !== 'pointercancel' && (Math.abs(dx) > w * 0.22 || (fast && Math.abs(dx) > 24));
+        const c = cur, n = inc, target = incIdx;
+        cur = null; inc = null; dir = 0; busy = true;
+        if (commit) {
+            latestHaptic();
+            n.style.zIndex = '3';                             // new cover comes in on top ...
+            n.style.transition = EASE;
+            n.style.transform = 'translateX(0) rotate(0deg) scale(1)';
+            c.style.transition = EASE;                        // ... and the old one slips in behind it
+            c.style.transform = 'translateX(0) rotate(0deg) scale(0.96)';
+            setTimeout(() => {
+                wrap.classList.add('lh-nofx');
+                wipe(c); wipe(n);
+                showLatestSlide(target);                      // swap the real "active" state with no transition
+                void wrap.offsetWidth;
+                wrap.classList.remove('lh-nofx');
+                latestHeroDragging = false; busy = false;
+                startLatestHeroTimer();
+            }, 480);
+        } else {
+            c.style.transition = EASE;
+            c.style.transform = 'translateX(0) rotate(0deg) scale(1)';
+            if (n) { n.style.transition = EASE; n.style.transform = 'translateX(0) rotate(0deg) scale(0.95)'; }   // tucks back behind
+            setTimeout(() => {
+                wipeQuiet(c, n);
+                latestHeroDragging = false; busy = false;
+                startLatestHeroTimer();
+            }, 480);
+        }
+        setTimeout(() => { latestHeroMoved = false; }, 60);
+    };
+    wrap.addEventListener('pointerup', finish);
+    wrap.addEventListener('pointercancel', finish);
 }
 
 function buildMangaCard(manga) {
@@ -617,7 +758,7 @@ function buildMangaCard(manga) {
 
     card.innerHTML = `
         <div class="clean-single-bold-frame">
-            <div class="absolute inset-0 bg-cover bg-center group-hover:scale-105 transition duration-500" style='background-image: ${esc(cssUrl(manga.image))}'></div>
+            <div class="absolute inset-0 bg-cover bg-center" style='background-image: ${esc(cssUrl(manga.image))}'></div>
             <div class="formula-type-badge">
                 <span>${esc(manga.coverType || 'Manga')}</span>
             </div>
@@ -650,8 +791,7 @@ function renderMainMangaGrid() {
             if (!selectedGenres.some(sg => mangaGenres.includes(sg.toLowerCase()))) return false;
         }
         if (searchQuery) {
-            const hay = (manga.title + ' ' + (manga.genre || '')).toLowerCase();
-            if (!hay.includes(searchQuery)) return false;
+            if (!String(manga.title || '').toLowerCase().includes(searchQuery)) return false;
         }
         return true;
     });
@@ -731,6 +871,69 @@ function chapterTileLabel(ch) {
     return m ? m[1] : '#';
 }
 
+// ---- Reading progress: how far each chapter has been read (0-100, best value is kept; 100 = read to the very end) ----
+const READ_PROGRESS_KEY = "sakura_read_progress_v2";   // v2: old values were measured while page images were still loading (wrong)
+let readProgKey = '';          // "<mangaId>___<chapterId>" of the chapter open in the reader
+let readSaveTimer = null;
+
+function getReadProgress() {
+    const p = safeGet(READ_PROGRESS_KEY, {});
+    return (p && typeof p === 'object' && !Array.isArray(p)) ? p : {};
+}
+
+// Chapters that were opened in the reader (even if not finished) -> they lose their "New" tag
+const OPENED_KEY = "sakura_chapters_opened_v1";
+function markChapterOpened(key) {
+    if (!key) return;
+    const o = safeGet(OPENED_KEY, {});
+    const all = (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};
+    if (all[key]) return;
+    all[key] = 1;
+    safeSet(OPENED_KEY, all);
+}
+
+function computeReadPct() {
+    const wrappers = document.querySelectorAll('#readerPagesContainer .manga-page-wrapper');
+    const total = wrappers.length;
+    if (!total) return 0;
+    if (currentReadingMode === 'page') return Math.round((currentPageIndex + 1) / total * 100);
+    const sec = document.getElementById('readerView');
+    const viewBottom = Math.min(sec ? sec.getBoundingClientRect().bottom : window.innerHeight, window.innerHeight);
+    // A page only counts once its image is loaded: before that its box is tiny, the layout is not real yet,
+    // and the whole chapter would seem to fit on one screen (-> wrong / full %).
+    const settled = (w) => {
+        const img = w.querySelector('img');
+        return (img && img.classList.contains('loaded')) || !!w.querySelector('.simple-loading-text.failed');
+    };
+    let done = 0, partial = 0;
+    for (let i = 0; i < total; i++) {
+        const w = wrappers[i];
+        const r = w.getBoundingClientRect();
+        if (r.top >= viewBottom) break;                    // not reached yet
+        if (!settled(w)) return 0;                         // layout not final -> do not measure now
+        if (r.bottom <= viewBottom + 4) { done++; continue; }
+        if (r.height > 0) partial = (viewBottom - r.top) / r.height;
+        break;
+    }
+    if (done >= total) return 100;                         // scrolled to the end of the last page
+    return Math.min(99, Math.floor((done + partial) / total * 100));
+}
+
+function saveReadProgress() {
+    if (!readProgKey) return;
+    const pct = computeReadPct();
+    if (!pct) return;
+    const all = getReadProgress();
+    if ((all[readProgKey] || 0) >= pct) return;           // never go backwards
+    all[readProgKey] = pct;
+    safeSet(READ_PROGRESS_KEY, all);
+}
+
+function scheduleReadSave(delay) {
+    clearTimeout(readSaveTimer);
+    readSaveTimer = setTimeout(saveReadProgress, delay == null ? 250 : delay);
+}
+
 function syncChapterTools() {
     const sb = document.getElementById('chSortBtn');
     if (sb) {
@@ -786,12 +989,16 @@ function renderChapterList(mangaId) {
 
     const isGrid = chPrefs.view === 'grid';
     container.className = isGrid ? 'ch-grid w-full' : 'space-y-2.5 w-full';
+    const readProg = getReadProgress();
+    const pctOf = (ch) => Math.max(0, Math.min(100, Number(readProg[`${mangaId}___${ch.id}`]) || 0));
+    const openedSet = safeGet(OPENED_KEY, {}) || {};
+    const showNew = (ch) => isChapterNew(ch) && !openedSet[`${mangaId}___${ch.id}`] && pctOf(ch) === 0;   // "New" ends as soon as the chapter is opened
 
     if (isGrid) {
         chapters.forEach((ch, ci) => {
             const tile = document.createElement('button');
             tile.type = 'button';
-            tile.className = 'ch-tile';
+            tile.className = 'ch-tile' + (pctOf(ch) >= 100 ? ' is-read' : '') + (showNew(ch) ? ' is-new' : '');
             tile.style.setProperty('--i', Math.min(ci, 12));
             tile.title = ch.title;
             tile.onclick = () => navigateToReaderView(mangaId, ch.id, ch.title);
@@ -807,22 +1014,42 @@ function renderChapterList(mangaId) {
     visible.forEach((ch, ci) => {
         const chBox = document.createElement('div');
         chBox.style.setProperty('--i', Math.min(ci, 12));
-        chBox.className = "chapter-grey-box flex items-center justify-between p-3.5 rounded-xl border border-dark-border cursor-pointer transition";
+        const pct = pctOf(ch);
+        chBox.className = "chapter-grey-box flex items-center justify-between p-3.5 rounded-xl border border-dark-border cursor-pointer transition" + (pct >= 100 ? ' is-read' : '');
         chBox.onclick = () => navigateToReaderView(mangaId, ch.id, ch.title);
 
         chBox.innerHTML = `
             <div class="flex items-center gap-3 min-w-0">
                 <div class="ch-badge shrink-0"><i class="fa-solid fa-book-open"></i></div>
                 <div class="flex flex-col min-w-0 gap-0.5">
-                    <span class="ch-title text-xs sm:text-sm font-bold text-slate-100">${esc(ch.title)}</span>
+                    <div class="ch-title-row">
+                        <span class="ch-title text-xs sm:text-sm font-bold text-slate-100">${esc(ch.title)}</span>
+                        ${showNew(ch) ? '<span class="ch-new">New</span>' : ''}
+                    </div>
                     <span class="ch-meta text-[10px] text-slate-400">
                         <span><i class="fa-regular fa-calendar"></i> ${esc(ch.date || 'Recent Release')}</span>
                     </span>
                 </div>
             </div>
-            <div class="ch-go shrink-0"><i class="fa-solid fa-chevron-right text-[10px]"></i></div>
+            <span class="ch-progress" aria-hidden="true"><i style="width:${pct}%"></i></span>
         `;
-        container.appendChild(chBox);
+
+        // chapter box + a separate Download box beside it (small gap between the two)
+        const row = document.createElement('div');
+        row.className = 'ch-row';
+        row.style.setProperty('--i', Math.min(ci, 12));
+        const dl = document.createElement('button');
+        dl.type = 'button';
+        dl.className = 'ch-dl';
+        dl.title = 'Download';
+        dl.setAttribute('aria-label', 'Download ' + ch.title);
+        dl.innerHTML = '<i class="fa-solid fa-download"></i>';
+        dl.dataset.key = mangaId + '___' + ch.id;
+        dlApplyBtn(dl);
+        dl.onclick = (ev) => { ev.stopPropagation(); startDownload(mangaId, ch.id); };
+        row.appendChild(chBox);
+        row.appendChild(dl);
+        container.appendChild(row);
     });
 
     if (!expanded && chapters.length > CH_LIST_LIMIT) {
@@ -1085,6 +1312,8 @@ function updatePagePositions() {
     const readerSec = document.getElementById('readerView');
     if (readerSec) readerSec.scrollTop = 0;
     window.scrollTo(0, 0);
+    syncPageChapterNav();
+    saveReadProgress();
 }
 
 function setupReaderTouchEvents() {
@@ -1118,10 +1347,159 @@ if (readerViewElement) {
             floatingBar.classList.remove('show');
         }
         lastReaderScrollTop = cur;   // always track, not only while the bar is visible
+        scheduleReadSave();
     }, { passive: true });
 }
 
+// Page loading placeholder: spinning sakura flower in a glowing ring + "LOADING" with bouncing dots
+const LOADER_FLOWER = (() => {
+    let petals = '';
+    for (let i = 0; i < 5; i++) {
+        petals += `<path d="M0,-8 C-13,-30 0,-44 0,-44 C0,-44 13,-30 0,-8 Z" transform="rotate(${i * 72})" opacity="${(0.95 - i * 0.1).toFixed(2)}"/>`;
+    }
+    return `<svg class="ld-flower" viewBox="-50 -50 100 100" aria-hidden="true"><g fill="#5fe0c2">${petals}</g><circle r="5" fill="#fff"/></svg>`;
+})();
+
+function setLoaderLoading(loader) {
+    loader.classList.remove('failed');
+    loader.innerHTML = `<div class="ld-box"><span class="ld-ring"></span><span class="ld-ring ld-ring2"></span>${LOADER_FLOWER}</div>` +
+        `<div class="ld-text">LOADING<span class="ld-dots"><i></i><i></i><i></i></span></div>`;
+}
+
+function setLoaderFailed(loader) {
+    loader.classList.add('failed');
+    loader.innerHTML = `<div class="ld-box ld-box-fail"><i class="fa-solid fa-rotate-right"></i></div>` +
+        `<div class="ld-text ld-text-fail">Failed to load<small>Tap to retry</small></div>`;
+}
+
+// Build the 3-part chapter bar: [Back Chapter] [chapter select] [Next Chapter]
+// manga.chapters is stored newest-first, so "back" = the older chapter (idx + 1), "next" = the newer one (idx - 1)
+function buildChapterNav(manga, chapterId) {
+    const chapters = manga.chapters || [];
+    const idx = chapters.findIndex(c => c.id === chapterId);
+    const prev = idx >= 0 && idx < chapters.length - 1 ? chapters[idx + 1] : null;
+    const next = idx > 0 ? chapters[idx - 1] : null;
+    const go = (ch) => openChapterInPlace(manga.id, ch.id, ch.title);
+
+    const nav = document.createElement('div');
+    nav.className = 'rcn';
+
+    const mkSide = (cls, icon, label, target, left) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'rcn-btn ' + cls;
+        b.disabled = !target;
+        if (target) b.title = target.title;
+        b.innerHTML = left
+            ? `<i class="fa-solid ${icon}"></i><span>${label}</span>`
+            : `<span>${label}</span><i class="fa-solid ${icon}"></i>`;
+        if (target) b.onclick = () => go(target);
+        return b;
+    };
+
+    // left corner
+    nav.appendChild(mkSide('rcn-back', 'fa-chevron-left', 'Back Chapter', prev, true));
+
+    // middle: chapter selection box (custom dropdown, opens upward, styled list)
+    const dd = document.createElement('div');
+    dd.className = 'rcn-select';
+    const ordered = (typeof chPrefs !== 'undefined' && chPrefs.sort === 'oldest') ? chapters.slice().reverse() : chapters;
+    const curCh = chapters[idx];
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'rcn-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.innerHTML = `<span class="rcn-trigger-text">${esc(curCh ? curCh.title : 'Chapters')}</span><i class="fa-solid fa-chevron-up rcn-caret" aria-hidden="true"></i>`;
+
+    const pop = document.createElement('div');
+    pop.className = 'rcn-pop';
+    pop.setAttribute('role', 'listbox');
+    pop.innerHTML = `<div class="rcn-pop-head"><span>CHAPTERS</span><em>${chapters.length}</em></div>`;
+    const listBox = document.createElement('div');
+    listBox.className = 'rcn-list';
+    ordered.forEach((c) => {
+        const it = document.createElement('button');
+        it.type = 'button';
+        it.className = 'rcn-item' + (c.id === chapterId ? ' current' : '');
+        it.setAttribute('role', 'option');
+        it.setAttribute('aria-selected', c.id === chapterId ? 'true' : 'false');
+        it.innerHTML = `<span class="rcn-item-num">${esc(chapterTileLabel(c))}</span><span class="rcn-item-title">${esc(c.title)}</span>` +
+            (c.id === chapterId ? '<i class="fa-solid fa-check rcn-item-check" aria-hidden="true"></i>' : '');
+        it.onclick = (ev) => {
+            ev.stopPropagation();
+            closePop();
+            if (c.id !== chapterId) go(c);
+        };
+        listBox.appendChild(it);
+    });
+    pop.appendChild(listBox);
+
+    const onDocDown = (ev) => { if (!dd.contains(ev.target)) closePop(); };
+    const onKey = (ev) => { if (ev.key === 'Escape') closePop(); };
+    function closePop() {
+        dd.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('pointerdown', onDocDown, true);
+        document.removeEventListener('keydown', onKey);
+    }
+    function openPop() {
+        dd.classList.add('open');
+        trigger.setAttribute('aria-expanded', 'true');
+        document.addEventListener('pointerdown', onDocDown, true);
+        document.addEventListener('keydown', onKey);
+        listBox.scrollTop = 0;                                   // always starts with the first chapters (5 visible), the rest by scrolling
+        const cur = listBox.querySelector('.current');
+        if (cur && cur.offsetTop + cur.offsetHeight > listBox.clientHeight) listBox.scrollTop = Math.max(0, cur.offsetTop - 8);   // reading chapter is further down: bring it into view
+    }
+    trigger.onclick = (ev) => { ev.stopPropagation(); dd.classList.contains('open') ? closePop() : openPop(); };
+
+    dd.appendChild(trigger);
+    dd.appendChild(pop);
+    nav.appendChild(dd);
+
+    // right corner
+    nav.appendChild(mkSide('rcn-next', 'fa-chevron-right', 'Next Chapter', next, false));
+    return nav;
+}
+
+// Page mode: show the fixed chapter bar only while the last page is on screen
+function syncPageChapterNav() {
+    const bar = document.getElementById('readerChapterNavFixed');
+    if (!bar) return;
+    const total = document.querySelectorAll('.manga-page-wrapper.page-mode').length;
+    bar.classList.toggle('show', currentReadingMode === 'page' && total > 0 && currentPageIndex >= total - 1);
+}
+
+let readerBlobUrls = [];
+let readerRenderToken = 0;
+function revokeReaderBlobs() { readerBlobUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch (e) {} }); readerBlobUrls = []; }
+
+// Downloaded chapter -> pages come from the device (zero bandwidth, works with no internet). Otherwise -> online as before.
 function renderReaderContent(readerParam, startIndex = 0) {
+    const token = ++readerRenderToken;
+    const key = readerParam.includes('___') ? readerParam : '';
+    if (key && dlIsOffline(key)) {
+        offGet(key).then((rec) => {
+            if (token !== readerRenderToken) return;                    // user already moved on
+            if (rec && rec.blobs && rec.blobs.length) {
+                revokeReaderBlobs();
+                readerBlobUrls = rec.blobs.map(b => URL.createObjectURL(b));
+                renderReaderContentInner(readerParam, startIndex, readerBlobUrls);
+            } else {
+                // files are gone (browser cleared storage): forget the offline flag, read online
+                const e = dlEntry(key); if (e) { e.off = false; dlSetEntry(e); }
+                renderReaderContentInner(readerParam, startIndex, null);
+            }
+        }).catch(() => { if (token === readerRenderToken) renderReaderContentInner(readerParam, startIndex, null); });
+        return;
+    }
+    revokeReaderBlobs();
+    renderReaderContentInner(readerParam, startIndex, null);
+}
+
+function renderReaderContentInner(readerParam, startIndex = 0, offlineUrls = null) {
     const container = document.getElementById('readerPagesContainer');
     const readerSection = document.getElementById('readerView');
     if (!container) return;
@@ -1133,8 +1511,11 @@ function renderReaderContent(readerParam, startIndex = 0) {
     const foundCh = (foundManga && foundManga.chapters) ? foundManga.chapters.find(c => c.id === chapterId) : null;
 
     const floatingTitle = document.getElementById('readerFloatingTitle');
-    if (floatingTitle && foundManga && foundCh) floatingTitle.textContent = `${foundManga.title} - ${foundCh.title}`;
+    if (floatingTitle && foundManga && foundCh) floatingTitle.textContent = `${foundManga.title} - ${foundCh.title}` + (offlineUrls ? '  \u00b7  Offline' : '');
 
+    readProgKey = (foundManga && foundCh) ? `${mangaId}___${chapterId}` : '';
+    markChapterOpened(readProgKey);
+    recordLastRead(readProgKey);
     if (foundCh && foundCh.pages && foundCh.pages.length > 0) {
         totalChapterPages = foundCh.pages;
         const pageMode = currentReadingMode === 'page';
@@ -1161,7 +1542,7 @@ function renderReaderContent(readerParam, startIndex = 0) {
         }
 
         foundCh.pages.forEach((pageObj, index) => {
-            const rawUrl = pageObj.data || pageObj;
+            const rawUrl = (offlineUrls && offlineUrls[index]) || pageObj.data || pageObj;
             const wrapper = document.createElement('div');
             wrapper.id = `manga-page-${index}`;
 
@@ -1174,7 +1555,7 @@ function renderReaderContent(readerParam, startIndex = 0) {
 
             const loader = document.createElement('div');
             loader.className = "simple-loading-text";
-            loader.textContent = "Loading...";
+            setLoaderLoading(loader);
 
             const img = document.createElement('img');
             img.loading = "lazy";
@@ -1182,19 +1563,18 @@ function renderReaderContent(readerParam, startIndex = 0) {
 
             img.onload = () => {
                 img.classList.add('loaded');
+                scheduleReadSave(400);
                 wrapper.style.minHeight = '0';
                 loader.style.opacity = '0';
                 setTimeout(() => loader.remove(), 250);
             };
-            img.onerror = () => {
-                loader.textContent = "Failed to load - tap to retry";
-            };
+            img.onerror = () => setLoaderFailed(loader);
 
             const start = () => loadDownscaledImage(rawUrl, img);
             loader.onclick = (ev) => {
-                if (loader.textContent.startsWith('Failed')) {
+                if (loader.classList.contains('failed')) {
                     ev.stopPropagation();
-                    loader.textContent = "Loading...";
+                    setLoaderLoading(loader);
                     start();
                 }
             };
@@ -1211,36 +1591,40 @@ function renderReaderContent(readerParam, startIndex = 0) {
             }
         });
 
-        // End of chapter (scroll mode): Next Chapter / Back to Lobby
-        if (!pageMode && foundManga) {
-            const idx = foundManga.chapters.findIndex(c => c.id === chapterId);
-            const next = idx > 0 ? foundManga.chapters[idx - 1] : null;   // list is newest-first
-            const end = document.createElement('div');
-            end.className = "w-full max-w-md mx-auto px-6 py-8 flex flex-col gap-3 cursor-default";
-            end.onclick = (ev) => ev.stopPropagation();
-
-            const mkBtn = (label, primary, fn) => {
-                const b = document.createElement('button');
-                b.textContent = label;
-                b.className = primary
-                    ? "py-3 rounded-2xl bg-sakura-500 text-white font-bold text-sm"
-                    : "py-3 rounded-2xl bg-dark-card border border-dark-border text-slate-200 font-bold text-sm";
-                b.onclick = fn;
-                return b;
-            };
-            if (next) end.appendChild(mkBtn(`Next: ${next.title}`, true, () => openChapterInPlace(mangaId, next.id, next.title)));
-            else {
-                const p = document.createElement('p');
-                p.className = "text-center text-xs text-slate-400";
-                p.textContent = "You are caught up desu~";
-                end.appendChild(p);
+        // Chapter navigation: Back Chapter | chapter select | Next Chapter
+        // scroll mode -> at the end of the chapter; page mode -> fixed bar that shows on the last page
+        const oldFixedNav = document.getElementById('readerChapterNavFixed');
+        if (oldFixedNav) oldFixedNav.remove();
+        if (foundManga) {
+            const nav = buildChapterNav(foundManga, chapterId);
+            if (!pageMode) {
+                const end = document.createElement('div');
+                end.className = 'rcn-end';
+                end.onclick = (ev) => ev.stopPropagation();
+                end.appendChild(nav);
+                container.appendChild(end);
+            } else if (readerSection) {
+                const fixed = document.createElement('div');
+                fixed.id = 'readerChapterNavFixed';
+                fixed.className = 'rcn-fixed';
+                fixed.onclick = (ev) => ev.stopPropagation();
+                fixed.appendChild(nav);
+                readerSection.appendChild(fixed);
+                syncPageChapterNav();
             }
-            end.appendChild(mkBtn("Back to Chapter Lobby", false, () => goBackToDetailFromReader()));
-            container.appendChild(end);
         }
 
         setupReaderTouchEvents();
+        // Auto Download (setting): reading online -> quietly save this chapter for offline too
+        if (!offlineUrls && userSettings.autoDl && foundManga && foundCh && foundCh.pages.length) {
+            const adKey = mangaId + '___' + chapterId;
+            const ae = dlEntry(adKey);
+            if (!dlIsOffline(adKey) && !dlRuntime.has(adKey) && !(ae && ae.status === 'downloading')) {
+                setTimeout(() => { if (userSettings.autoDl) startDownload(mangaId, chapterId, { auto: true }); }, 1500);
+            }
+        }
         lastReaderScrollTop = 0;
+        scheduleReadSave(700);      // short chapters / page mode: counts what is already on screen
         if (readerSection) {
             if (!pageMode && startIndex > 0 && container.children[startIndex]) {
                 readerSection.scrollTop = container.children[startIndex].offsetTop;
@@ -1252,6 +1636,8 @@ function renderReaderContent(readerParam, startIndex = 0) {
         return;
     }
 
+    const staleNav = document.getElementById('readerChapterNavFixed');
+    if (staleNav) staleNav.remove();
     container.style.height = 'auto';
     container.innerHTML = `
         <div class="p-10 text-center text-slate-400 text-xs w-full">
@@ -1303,7 +1689,7 @@ function renderView(state, isRestore = false) {
     firstViewRendered = true;
     const reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
-    if (isFirst || reduce) {
+    if (isFirst || reduce || perfLow()) {
         applyView(state, isFirst ? 'first' : 'none');
         return;
     }
@@ -1311,7 +1697,18 @@ function renderView(state, isRestore = false) {
         // The browser snapshots the old page, we swap the DOM, then it cross-fades old -> new.
         // No blank frame, and the new page is already at the right scroll position.
         document.documentElement.dataset.nav = navDirection === 'back' ? 'back' : 'forward';
-        document.startViewTransition(() => applyView(state, 'none'));
+        const go = () => document.startViewTransition(() => applyView(state, 'none'));
+        // Chapter Lobby: make sure its cover is already decoded, otherwise the new snapshot is taken
+        // while the cover is still empty (black flash / half a cover).
+        const target = state.view === 'detail' ? loadSharedMangas().find(m => m.id === state.id) : null;
+        if (target && target.image) {
+            const img = new Image();
+            img.src = target.image;
+            const ready = img.decode ? img.decode().catch(() => {}) : Promise.resolve();
+            Promise.race([ready, new Promise(r => setTimeout(r, 350))]).then(go);
+        } else {
+            go();
+        }
         return;
     }
     applyView(state, 'css');
@@ -1319,7 +1716,9 @@ function renderView(state, isRestore = false) {
 
 // mode: 'first' (page load) | 'none' (no CSS animation) | 'css' (fallback slide animation)
 function applyView(state, mode) {
-    const views = ['homeView', 'genresView', 'detailView', 'readerView'];
+    const views = ['homeView', 'genresView', 'detailView', 'readerView', 'historyView', 'settingsView'];
+    const prevVisible = views.find(v => !document.getElementById(v).classList.contains('hidden'));   // page we are leaving
+    if (prevVisible === 'readerView') { clearTimeout(readSaveTimer); saveReadProgress(); }   // keep the last bit of progress before the reader is hidden
     views.forEach(v => {
         const el = document.getElementById(v);
         el.classList.add('hidden');
@@ -1341,6 +1740,9 @@ function applyView(state, mode) {
         genresMode = state.view;
         renderGenresView();
     }
+    if (state.view === 'history') targetId = 'historyView';
+    if (state.view === 'history') renderHistoryPage();
+    if (state.view === 'settings') { targetId = 'settingsView'; renderSettingsPage(); }
     if (state.view === 'detail') {
         targetId = 'detailView';
         shownDetailId = state.id;
@@ -1354,6 +1756,12 @@ function applyView(state, mode) {
 
     const targetSection = document.getElementById(targetId);
     if (targetSection) {
+        // Lobby entrance animation only when arriving from Home/Genres - never when returning from the Reader
+        if (targetId === 'detailView') {
+            if (prevVisible !== 'detailView') targetSection.classList.toggle('lobby-enter', prevVisible !== 'readerView');
+        } else {
+            document.getElementById('detailView').classList.remove('lobby-enter');
+        }
         targetSection.classList.remove('hidden');
         if (mode === 'css') {
             void targetSection.offsetWidth;   // flush styles so the animation restarts even when the same view is re-opened
@@ -1368,7 +1776,11 @@ function applyView(state, mode) {
     const headerBar = document.getElementById('mainHeaderBar');
     const sakuraCanvas = document.getElementById('sakuraCanvas');
 
-    if (targetId === 'readerView' || targetId === 'detailView') {
+    updateHomeDock(targetId);
+    currentViewId = targetId;
+    syncWakeLock();
+
+    if (targetId === 'readerView' || targetId === 'detailView' || targetId === 'historyView' || targetId === 'settingsView') {
         if (headerBar) headerBar.classList.add('hidden');
         if (sakuraCanvas) sakuraCanvas.style.display = 'none';
     } else {
@@ -1444,7 +1856,7 @@ function searchItemHtml(m, i, opts) {
 function getSearchMatches(q) {
     const ql = q.toLowerCase();
     return loadSharedMangas()
-        .filter(m => ((m.title || '') + ' ' + (m.genre || '')).toLowerCase().includes(ql))
+        .filter(m => String(m.title || '').toLowerCase().includes(ql))
         .sort((a, b) => {
             const as = String(a.title || '').toLowerCase().startsWith(ql) ? 0 : 1;
             const bs = String(b.title || '').toLowerCase().startsWith(ql) ? 0 : 1;
@@ -1576,7 +1988,7 @@ function dustCollapseRow(el) {
 function dustAfter() {
     dustActive = Math.max(0, dustActive - 1);
     searchDusting = dustActive > 0;
-    if (!dustActive) renderSearchBody(getRecentSearches().length === 0);
+    if (!dustActive) { searchBodyMode = ''; renderSearchBody(true); }
 }
 
 async function dustItems(items, opts) {
@@ -1696,6 +2108,7 @@ async function dustItems(items, opts) {
         // overlay canvas; the real rows are hidden on the very frame the intact copy appears
         const cv = document.createElement('canvas');
         cv.className = 'dust-canvas';
+        cv.style.cssText = 'position:fixed;left:0;top:0;width:' + innerWidth + 'px;height:' + innerHeight + 'px;';
         cv.width = Math.round(innerWidth * DPR); cv.height = Math.round(innerHeight * DPR);
         document.body.appendChild(cv);
         const ctx = cv.getContext('2d');
@@ -1746,6 +2159,7 @@ async function dustItems(items, opts) {
 
 // "Clear all": every visible row turns to dust, memory is wiped
 function dustClearAll() {
+    if (searchDusting) return;
     const body = document.getElementById('searchBody');
     const items = body ? Array.from(body.querySelectorAll('.search-item:not(.dust-hide)')) : [];
     if (!items.length || dustReduced()) {
@@ -1759,7 +2173,7 @@ function dustClearAll() {
 
 // the X on ONE row: only that row turns to dust, the rows below slide up
 function removeRecentSearch(id, row) {
-    if (row && row.classList.contains('dust-hide')) return;
+    if (searchDusting || (row && row.classList.contains('dust-hide'))) return;
     if (!row || dustReduced()) {
         safeSet(RECENT_SEARCH_KEY, getRecentSearches().filter(x => x.id !== id));
         renderSearchBody(false);
@@ -1833,6 +2247,12 @@ function setupSearch() {
             const first = getSearchMatches(q)[0];
             if (first) { e.preventDefault(); openSearchResult(first.id); }
         }
+    });
+    body.addEventListener('pointerdown', (e) => {
+        if (e.target.closest('[data-remove],[data-clear-all]')) e.preventDefault();   // keep input focused: keyboard must not move the layout
+    });
+    body.addEventListener('mousedown', (e) => {
+        if (e.target.closest('[data-remove],[data-clear-all]')) e.preventDefault();
     });
     body.addEventListener('click', (e) => {
         const rm = e.target.closest('[data-remove]');
@@ -2293,6 +2713,11 @@ function initSakuraPetals() {
     }));
     
     function animate() {
+        if (perfLow()) {                       // Battery Saver / Low-end Mode: no falling petals, check again only twice a second
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            setTimeout(animate, 500);
+            return;
+        }
         if (document.hidden || canvas.style.display === 'none') {
             requestAnimationFrame(animate);
             return;
@@ -2325,6 +2750,7 @@ window.addEventListener('DOMContentLoaded', () => {
     const prefs = safeGet(PREFS_KEY, {});
     if (prefs.mode === 'scroll' || prefs.mode === 'page') currentReadingMode = prefs.mode;
     if (['low', 'medium', 'high'].includes(prefs.quality)) currentImageQuality = prefs.quality;
+    else if (userSettings.lite) currentImageQuality = 'low';     // Low-end Mode: lighter chapter images until the reader picks a quality
     syncReaderPrefsUI();
     setupSearch();
     renderLatestHero();
@@ -2336,5 +2762,647 @@ window.addEventListener('DOMContentLoaded', () => {
         if (e.key === SHARED_STORAGE_KEY) {
             refreshCurrentView();
         }
+    });
+});
+
+
+// ============================================================================
+//  HOME QUICK DOCK  (corner button -> long bar with Bookmark / History / Setting)
+// ============================================================================
+function isDockOpen() {
+    const d = document.getElementById('homeDock');
+    return !!d && d.dataset.open === 'true';
+}
+function setDock(open) {
+    const d = document.getElementById('homeDock');
+    const fab = document.getElementById('dockFab');
+    if (!d) return;
+    d.dataset.open = open ? 'true' : 'false';
+    if (fab) fab.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+window.toggleDock = function() { setDock(!isDockOpen()); };
+
+// the dock only lives on the Home page
+function updateHomeDock(targetId) {
+    const d = document.getElementById('homeDock');
+    if (!d) return;
+    const onHome = targetId === 'homeView';
+    d.classList.toggle('is-visible', onHome);
+    d.setAttribute('aria-hidden', onHome ? 'false' : 'true');
+    setDock(false);
+    closeLibrarySheet();
+}
+
+let libMode = '';
+function libRender() {
+    const list = document.getElementById('libList');
+    if (!list) return;
+    const all = loadSharedMangas();
+    list.innerHTML = '';
+
+    const empty = (icon, text) => {
+        list.innerHTML = '<div class="lib-empty"><i class="' + icon + '"></i><p>' + text + '</p></div>';
+    };
+
+    const ids = safeGet(BOOKMARK_KEY, []);
+    const items = (Array.isArray(ids) ? ids : []).map(id => all.find(m => m.id === id)).filter(Boolean).reverse();
+    if (!items.length) return empty('fa-regular fa-bookmark', 'No bookmarks yet');
+    items.forEach(m => list.appendChild(libItem(m, m.latestChapterTitle || (m.genre || ''), 'bookmark', () => {
+        closeLibrarySheet(); window.navigateToView('detail', m.id, m.title);
+    })));
+}
+
+function libItem(m, sub, kind, onOpen) {
+    const el = document.createElement('div');
+    el.className = 'lib-item';
+    el.setAttribute('role', 'button');
+    el.tabIndex = 0;
+    el.innerHTML =
+        '<span class="lib-thumb" style=\'background-image:' + esc(cssUrl(m.image)) + '\'></span>' +
+        '<span class="lib-meta"><span class="lib-name">' + esc(m.title) + '</span><span class="lib-sub">' + esc(sub) + '</span></span>' +
+        (kind === 'bookmark' ? '<button type="button" class="lib-remove" aria-label="Remove bookmark"><i class="fa-solid fa-xmark"></i></button>' : '');
+    el.addEventListener('click', (e) => {
+        if (e.target.closest('.lib-remove')) {
+            e.stopPropagation();
+            const ids = safeGet(BOOKMARK_KEY, []).filter(id => id !== m.id);
+            safeSet(BOOKMARK_KEY, ids);
+            libRender();
+            return;
+        }
+        onOpen();
+    });
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); onOpen(); } });
+    return el;
+}
+
+// History button -> its own page (same slide transition as the other pages). Empty for now.
+window.openHistoryPage = function() {
+    setDock(false);
+    window.navigateToView('history', '', 'History');
+};
+
+window.openLibrarySheet = function(mode) {
+    libMode = mode;
+    setDock(false);
+    document.getElementById('libTitleText').textContent = mode === 'bookmark' ? 'Bookmark' : 'History';
+    document.getElementById('libIcon').className = mode === 'bookmark' ? 'fa-solid fa-bookmark' : 'fa-solid fa-clock-rotate-left';
+    libRender();
+    document.getElementById('libBackdrop').classList.add('show');
+    const sheet = document.getElementById('libSheet');
+    sheet.classList.add('show');
+    sheet.setAttribute('aria-hidden', 'false');
+};
+window.closeLibrarySheet = function() {
+    const sheet = document.getElementById('libSheet');
+    if (!sheet) return;
+    sheet.classList.remove('show');
+    sheet.setAttribute('aria-hidden', 'true');
+    document.getElementById('libBackdrop')?.classList.remove('show');
+};
+// tap anywhere outside the dock closes it; Esc closes dock + sheet
+document.addEventListener('click', (e) => {
+    if (isDockOpen() && !e.target.closest('#homeDock')) setDock(false);
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (isDockOpen()) setDock(false);
+    closeLibrarySheet();
+});
+
+
+// ============================================================================
+//  HISTORY PAGE: "Latest Reading" card
+// ============================================================================
+const LAST_READ_KEY = "sakura_last_read_v1";
+
+function recordLastRead(key) {
+    if (!key || key.indexOf('___') < 0) return;
+    const [m, c] = key.split('___');
+    safeSet(LAST_READ_KEY, { m, c, t: Date.now() });
+}
+
+// a few embers drifting up behind Makima
+function buildHistoryEmbers() {
+    const box = document.getElementById('hxEmbers');
+    if (!box || box.childNodes.length) return;
+    for (let i = 0; i < 12; i++) {
+        const e = document.createElement('i');
+        e.style.left = (8 + Math.random() * 84) + '%';
+        e.style.setProperty('--sz', (2 + Math.random() * 3).toFixed(1) + 'px');
+        e.style.setProperty('--dx', ((Math.random() - 0.5) * 36).toFixed(0) + 'px');
+        e.style.animationDuration = (5 + Math.random() * 5).toFixed(1) + 's';
+        e.style.animationDelay = (-Math.random() * 9).toFixed(1) + 's';
+        box.appendChild(e);
+    }
+}
+
+function renderHistoryPage() {
+    const card = document.getElementById('hxCard');
+    if (!card) return;
+    buildHistoryEmbers();
+    dmRender();
+    const last = safeGet(LAST_READ_KEY, null);
+    const manga = last && loadSharedMangas().find(x => x.id === last.m);
+    const thumb = document.getElementById('hxThumb');
+    const chap = document.getElementById('hxChap');
+    if (!manga) {
+        card.classList.add('is-empty');
+        card.onclick = null; card.onkeydown = null;
+        document.getElementById('hxName').textContent = 'Nothing read yet';
+        thumb.style.backgroundImage = '';
+        if (chap) chap.hidden = true;
+        return;
+    }
+    card.classList.remove('is-empty');
+    document.getElementById('hxName').textContent = manga.title;
+    thumb.style.backgroundImage = cssUrl(manga.image);
+
+    // how far has this manga been read: the highest chapter that was opened (falls back to the last opened one)
+    const opened = safeGet(OPENED_KEY, {}) || {};
+    const prog = getReadProgress();
+    const chs = manga.chapters || [];
+    let best = null;
+    chs.forEach((c) => {
+        const k = manga.id + '___' + c.id;
+        if (!opened[k] && !(prog[k] > 0) && c.id !== last.c) return;
+        if (!best || (Number.isFinite(c.num) && (!Number.isFinite(best.num) || c.num > best.num))) best = c;
+    });
+    if (chap) {
+        if (best) { document.getElementById('hxChapText').textContent = 'Read up to ' + best.title; chap.hidden = false; }
+        else chap.hidden = true;
+    }
+    card.onclick = () => window.navigateToView('detail', manga.id, manga.title);   // the manga's Chapter Lobby
+    card.onkeydown = (e) => { if (e.key === 'Enter') card.click(); };
+}
+
+// ============================================================================
+//  TOAST (small notification pill, top of the screen)
+// ============================================================================
+function showToast(text, kind) {
+    const host = document.getElementById('toastHost');
+    if (!host) return;
+    const t = document.createElement('div');
+    t.className = 'toast ' + (kind || 'ok');
+    const ico = kind === 'err' ? 'fa-triangle-exclamation' : (kind === 'busy' ? 'fa-arrow-down' : 'fa-check');
+    t.innerHTML = '<span class="toast-ico"><i class="fa-solid ' + ico + '"></i></span><span class="toast-text"></span>';
+    t.querySelector('.toast-text').textContent = text;
+    host.appendChild(t);
+    requestAnimationFrame(() => requestAnimationFrame(() => t.classList.add('in')));      // rises up from the bottom
+    setTimeout(() => { t.classList.remove('in'); setTimeout(() => t.remove(), 450); }, kind === 'busy' ? 2000 : 2800);
+    while (host.children.length > 3) host.firstChild.remove();
+}
+
+// ============================================================================
+//  DOWNLOAD MANAGER
+//  Download button (chapter list) -> fetches every page -> packs a .zip -> saves it to the device.
+//  The History page lists each download: Downloading... (live progress) / Downloaded / Failed.
+// ============================================================================
+const DL_KEY = "sakura_downloads_v1";
+const dlRuntime = new Map();            // id -> { ctrl } for downloads that are running right now
+
+function dlLoad() {
+    const l = safeGet(DL_KEY, []);
+    return Array.isArray(l) ? l : [];
+}
+function dlSave(list) { safeSet(DL_KEY, list.slice(0, 60)); }
+// anything still "downloading" from a previous visit can no longer be running
+(function dlFixStale() {
+    const l = dlLoad();
+    let ch = false;
+    l.forEach(e => { if (e.status === 'downloading') { e.status = 'error'; e.err = 'Interrupted'; ch = true; } });
+    if (ch) dlSave(l);
+})();
+
+
+// ---- Offline store (IndexedDB): the downloaded page images are kept here so they can be read with no network ----
+const OFF_DB = 'sakura_offline_v1', OFF_STORE = 'chapters';
+let offDbP = null;
+function offDb() {
+    if (!offDbP) offDbP = new Promise((res, rej) => {
+        if (!('indexedDB' in window)) return rej(new Error('No IndexedDB'));
+        const rq = indexedDB.open(OFF_DB, 1);
+        rq.onupgradeneeded = () => rq.result.createObjectStore(OFF_STORE, { keyPath: 'id' });
+        rq.onsuccess = () => res(rq.result);
+        rq.onerror = () => rej(rq.error);
+    }).catch((e) => { offDbP = null; throw e; });
+    return offDbP;
+}
+function offTx(mode, fn) {
+    return offDb().then(db => new Promise((res, rej) => {
+        const tx = db.transaction(OFF_STORE, mode);
+        const rq = fn(tx.objectStore(OFF_STORE));
+        tx.oncomplete = () => res(rq ? rq.result : undefined);
+        tx.onerror = tx.onabort = () => rej(tx.error || new Error('IDB failed'));
+    }));
+}
+const offPut = (rec) => offTx('readwrite', s => s.put(rec));
+const offGet = (id) => offTx('readonly', s => s.get(id));
+const offDel = (id) => offTx('readwrite', s => s.delete(id)).catch(() => {});
+const offHas = (id) => offTx('readonly', s => s.count(id)).then(n => n > 0).catch(() => false);
+
+// A chapter counts as "offline" only when its history entry says done AND the images were stored
+function dlIsOffline(id) { const e = dlEntry(id); return !!(e && e.status === 'done' && e.off); }
+
+function dlEntry(id) { return dlLoad().find(e => e.id === id); }
+function dlSetEntry(e) {
+    const l = dlLoad().filter(x => x.id !== e.id);
+    l.unshift(e);
+    dlSave(l);
+}
+function dlFmtSize(b) {
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB';
+    return Math.max(1, Math.round(b / 1024)) + ' KB';
+}
+
+// state of the little download button in the chapter list
+function dlApplyBtn(btn) {
+    if (!btn) return;
+    const e = dlEntry(btn.dataset.key);
+    const st = e ? e.status : '';
+    btn.classList.toggle('is-busy', st === 'downloading');
+    btn.classList.toggle('is-done', st === 'done');
+    btn.disabled = st === 'downloading';
+    btn.innerHTML = st === 'downloading'
+        ? '<span class="dl-anim" aria-hidden="true"><i class="fa-solid fa-arrow-down"></i></span>'      // arrow keeps sliding down into the tray
+        : '<i class="fa-solid ' + (st === 'done' ? 'fa-check' : 'fa-download') + '"></i>';
+    btn.title = st === 'downloading' ? 'Downloading...' : (st === 'done' ? 'Downloaded - remove it in History to download again' : 'Download');
+}
+function dlRefreshButtons() {
+    document.querySelectorAll('.ch-dl[data-key]').forEach(dlApplyBtn);
+}
+
+// ---- minimal ZIP writer (store only: page images are already compressed) ----
+const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+    return t;
+})();
+function crc32(u8) {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function buildZip(files) {
+    const enc = new TextEncoder();
+    const parts = [], central = [];
+    let offset = 0;
+    const now = new Date();
+    const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+    const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+    files.forEach((f) => {
+        const name = enc.encode(f.name), crc = crc32(f.data), size = f.data.length;
+        const lh = new DataView(new ArrayBuffer(30));
+        lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+        lh.setUint16(10, dosTime, true); lh.setUint16(12, dosDate, true); lh.setUint32(14, crc, true);
+        lh.setUint32(18, size, true); lh.setUint32(22, size, true); lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+        parts.push(lh.buffer, name, f.data);
+        const ch = new DataView(new ArrayBuffer(46));
+        ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(10, 0, true);
+        ch.setUint16(12, dosTime, true); ch.setUint16(14, dosDate, true); ch.setUint32(16, crc, true);
+        ch.setUint32(20, size, true); ch.setUint32(24, size, true); ch.setUint16(28, name.length, true);
+        ch.setUint32(42, offset, true);
+        central.push(ch.buffer, name);
+        offset += 30 + name.length + size;
+    });
+    let cdSize = 0;
+    central.forEach(b => { cdSize += b.byteLength !== undefined ? b.byteLength : b.length; });
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+    end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+    return new Blob([...parts, ...central, end.buffer], { type: 'application/zip' });
+}
+
+function dlSafeName(s) { return String(s || 'chapter').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'chapter'; }
+function dlExt(type, url) {
+    if (/png/.test(type)) return 'png';
+    if (/webp/.test(type)) return 'webp';
+    if (/gif/.test(type)) return 'gif';
+    if (/jpe?g/.test(type)) return 'jpg';
+    const m = String(url).match(/\.(png|jpe?g|webp|gif)(?:[?#]|$)/i);
+    return m ? m[1].toLowerCase().replace('jpeg', 'jpg') : 'jpg';
+}
+
+async function startDownload(mangaId, chapterId, opts = {}) {
+    const id = mangaId + '___' + chapterId;
+    if (dlRuntime.has(id)) return;
+    const manga = loadSharedMangas().find(m => m.id === mangaId);
+    const ch = manga && (manga.chapters || []).find(c => c.id === chapterId);
+    if (!manga || !ch) return;
+    const urls = (ch.pages || []).map(p => p && p.data).filter(Boolean);
+    if (!urls.length) { showToast('No pages to download in ' + ch.title, 'err'); return; }
+
+    // already downloaded (and still stored on this device) -> never download it again; only deleting it in History re-enables it
+    const old = dlEntry(id);
+    if (old && old.status === 'done' && old.off && await offHas(id)) {
+        showToast('Chapter already downloaded', 'ok');
+        dlRefreshButtons();
+        return;
+    }
+
+    const entry = { id, m: mangaId, c: chapterId, mt: manga.title, ct: ch.title, img: manga.image || '', status: 'downloading', done: 0, total: urls.length, size: 0, t: Date.now() };
+    dlSetEntry(entry);
+    const ctrl = new AbortController();
+    dlRuntime.set(id, { ctrl });
+    dlRefreshButtons(); dmRender();
+    showToast('Downloading...', 'busy');
+
+    try {
+        const files = new Array(urls.length);
+        const blobs = new Array(urls.length);
+        let next = 0, size = 0;
+        const worker = async () => {
+            while (next < urls.length) {
+                const i = next++;
+                const res = await fetch(urls[i], { signal: ctrl.signal });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const blob = await res.blob();
+                const buf = new Uint8Array(await blob.arrayBuffer());
+                size += buf.length;
+                files[i] = { name: String(i + 1).padStart(3, '0') + '.' + dlExt(blob.type, urls[i]), data: buf };
+                blobs[i] = blob;                   // the same bytes are reused for offline reading: no second download
+                entry.done++; entry.size = size;
+                dmUpdateProgress(entry);           // live bar, no storage write per page
+            }
+        };
+        await Promise.all([worker(), worker(), worker()]);
+
+        let zipSize = size;
+        if (!opts.auto) {                                  // manual download also saves the .zip to the phone; auto download keeps only the offline copy
+            const zip = buildZip(files);
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(zip);
+            a.download = dlSafeName(manga.title) + ' - ' + dlSafeName(ch.title) + '.zip';
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+            zipSize = zip.size;
+        }
+
+        // keep the pages on the device for offline reading
+        try {
+            await offPut({ id, m: mangaId, c: chapterId, n: blobs.length, blobs, t: Date.now() });
+            entry.off = true;
+        } catch (e) { entry.off = false; }
+
+        entry.status = 'done'; entry.size = zipSize; entry.t = Date.now();
+        dlSetEntry(entry);
+        showToast('Downloading Done', 'ok');
+    } catch (err) {
+        if (ctrl.signal.aborted) { dlSave(dlLoad().filter(e => e.id !== id)); }
+        else {
+            entry.status = 'error'; entry.err = (err && err.message) || 'Failed'; entry.t = Date.now();
+            dlSetEntry(entry);
+            showToast('Download failed: ' + ch.title, 'err');
+        }
+    }
+    dlRuntime.delete(id);
+    dlRefreshButtons(); dmRender();
+}
+
+function dlCancelOrRemove(id) {
+    const rt = dlRuntime.get(id);
+    if (rt) { rt.ctrl.abort(); return; }
+    dlSave(dlLoad().filter(e => e.id !== id));
+    offDel(id);                                   // deleting from History = the only way to download it again
+    dlRefreshButtons();
+    dmRender();
+}
+
+// ---- Download Management list (History page) ----
+function dmUpdateProgress(e) {
+    const row = document.querySelector('.dm-item[data-id="' + e.id + '"]');
+    if (!row) return;
+    const pct = e.total ? Math.round(e.done / e.total * 100) : 0;
+    const bar = row.querySelector('.dm-bar > i'), cnt = row.querySelector('.dm-count');
+    if (bar) bar.style.width = pct + '%';
+    if (cnt) cnt.textContent = e.done + ' / ' + e.total;
+}
+
+function dmRender() {
+    const list = document.getElementById('dmList');
+    if (!list) return;
+    const items = dlLoad();
+    list.innerHTML = '';
+    if (!items.length) {
+        list.innerHTML = '<div class="dm-empty"><i class="fa-solid fa-cloud-arrow-down"></i><span>No downloads yet</span></div>';
+        return;
+    }
+    items.forEach((e) => {
+        const pct = e.total ? Math.round(e.done / e.total * 100) : 0;
+        const el = document.createElement('div');
+        el.className = 'dm-item ' + e.status;
+        el.dataset.id = e.id;
+        let status = '';
+        if (e.status === 'downloading') {
+            status = '<span class="dm-status"><span class="dm-dl">Downloading<b>.</b><b>.</b><b>.</b></span><span class="dm-count">' + e.done + ' / ' + e.total + '</span></span>' +
+                     '<span class="dm-bar"><i style="width:' + pct + '%"></i></span>';
+        } else if (e.status === 'done') {
+            status = '<span class="dm-status"><span class="dm-ok"><i class="fa-solid fa-circle-check"></i> Downloaded</span><span class="dm-count">' + dlFmtSize(e.size || 0) + ' \u00b7 ' + timeAgo(e.t) + '</span></span>';
+        } else {
+            status = '<span class="dm-status"><span class="dm-bad"><i class="fa-solid fa-circle-exclamation"></i> Failed</span><button type="button" class="dm-retry">Retry</button></span>';
+        }
+        el.innerHTML =
+            '<span class="dm-thumb" style=\'background-image:' + esc(cssUrl(e.img)) + '\'></span>' +
+            '<span class="dm-meta"><span class="dm-name">' + esc(e.mt) + '</span><span class="dm-chap">' + esc(e.ct) + '</span>' + status + '</span>' +
+            '<button type="button" class="dm-x" aria-label="' + (e.status === 'downloading' ? 'Cancel' : 'Remove') + '"><i class="fa-solid fa-xmark"></i></button>';
+        el.querySelector('.dm-x').onclick = (ev) => { ev.stopPropagation(); dlCancelOrRemove(e.id); };
+        if (e.status === 'done') {
+            el.classList.add('readable');
+            el.onclick = () => {
+                const m = loadSharedMangas().find(x => x.id === e.m);
+                if (!m || !(m.chapters || []).some(c => c.id === e.c)) { showToast('Chapter data not available yet', 'err'); return; }
+                navigateToReaderView(e.m, e.c, e.ct);   // reader picks the offline copy automatically
+            };
+        }
+        const rt = el.querySelector('.dm-retry');
+        if (rt) rt.onclick = (ev) => { ev.stopPropagation(); startDownload(e.m, e.c); };
+        list.appendChild(el);
+    });
+}
+
+
+// ---- Offline app shell: lets the site itself open with no internet (needs https or localhost) ----
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+    window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
+}
+
+
+// ============================================================================
+//  SETTINGS PAGE  -  Data Storage Manager
+// ============================================================================
+window.openSettingsPage = function() {
+    setDock(false);
+    window.navigateToView('settings', '', 'Setting');
+};
+
+function stFmt(b) {
+    b = Math.max(0, b || 0);
+    if (b >= 1073741824) return (b / 1073741824).toFixed(2) + ' GB';
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB';
+    if (b >= 1024) return Math.round(b / 1024) + ' KB';
+    return b + ' B';
+}
+
+// size of the saved app files (Cache Storage); opaque (cross-origin, no-cors) responses cannot be measured and count as 0
+async function stCacheBytes() {
+    if (!('caches' in window)) return 0;
+    let total = 0;
+    try {
+        const names = await caches.keys();
+        for (const n of names) {
+            const c = await caches.open(n);
+            const reqs = await c.keys();
+            for (const rq of reqs) {
+                const res = await c.match(rq);
+                if (!res || res.type === 'opaque') continue;
+                total += (await res.blob()).size;
+            }
+        }
+    } catch (e) {}
+    return total;
+}
+
+async function renderSettingsPage() {
+    const $ = (id) => document.getElementById(id);
+    // 1) downloaded chapters (from the download list)
+    const done = dlLoad().filter(e => e.status === 'done' && e.off);
+    const dl = done.reduce((s, e) => s + (e.size || 0), 0);
+    $('stChap').textContent = done.length + (done.length === 1 ? ' chapter downloaded' : ' chapters downloaded');
+    $('stChapSize').textContent = stFmt(dl);
+    // 2) cache data
+    const cache = await stCacheBytes();
+
+    const total = dl + cache;
+    const bar = $('stBar');
+    const pct = (v) => (total > 0 && v > 0) ? Math.max(2, v / total * 100) : 0;
+    const pd = pct(dl), pc = pct(cache);
+    const scale = (pd + pc) > 100 ? 100 / (pd + pc) : 1;
+    bar.querySelector('.seg-dl').style.width = (pd * scale) + '%';
+    bar.querySelector('.seg-other').style.width = (pc * scale) + '%';
+    $('stFree').textContent = stFmt(total);
+    $('stFreeOf').textContent = 'used by this site';
+    $('stDl').textContent = stFmt(dl);
+    $('stOther').textContent = stFmt(cache);
+    $('stNote').textContent = 'Downloaded chapters = pages saved for offline reading. Cache data = saved app files (fonts, libraries).';
+}
+
+// ---- confirm dialog ----
+let stConfirmAction = null;
+function stAsk(opts, action) {
+    stConfirmAction = action;
+    document.getElementById('stConfirmIcon').className = 'fa-solid ' + opts.icon;
+    document.getElementById('stConfirmTitle').textContent = opts.title;
+    document.getElementById('stConfirmText').textContent = opts.text;
+    document.getElementById('stConfirmYes').textContent = opts.yes;
+    document.getElementById('stBackdrop').classList.add('show');
+    const c = document.getElementById('stConfirm');
+    c.classList.add('show'); c.setAttribute('aria-hidden', 'false');
+}
+function stCloseConfirm() {
+    stConfirmAction = null;
+    document.getElementById('stBackdrop').classList.remove('show');
+    const c = document.getElementById('stConfirm');
+    c.classList.remove('show'); c.setAttribute('aria-hidden', 'true');
+}
+
+async function stClearCache() {
+    try {
+        if ('caches' in window) { const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); }
+        showToast('Cache cleared', 'ok');
+    } catch (e) { showToast('Could not clear cache', 'err'); }
+    renderSettingsPage();
+}
+
+async function stClearAll() {
+    try {
+        dlRuntime.forEach(rt => { try { rt.ctrl.abort(); } catch (e) {} });          // stop running downloads
+        revokeReaderBlobs();
+        // saved lists / progress / preferences of this site
+        Object.keys(localStorage).filter(k => k.indexOf('sakura_') === 0).forEach(k => localStorage.removeItem(k));
+        // downloaded chapter images
+        try { const db = await offDb(); db.close(); } catch (e) {}
+        offDbP = null;
+        await new Promise((res) => {
+            try {
+                const rq = indexedDB.deleteDatabase(OFF_DB);
+                rq.onsuccess = rq.onerror = rq.onblocked = () => res();
+            } catch (e) { res(); }
+        });
+        if ('caches' in window) { const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); }
+        showToast('All data cleared', 'ok');
+        setTimeout(() => { history.replaceState(null, '', location.pathname + location.search); location.reload(); }, 900);
+    } catch (e) {
+        showToast('Could not clear everything', 'err');
+        renderSettingsPage();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const on = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
+    on('stClearCache', () => stAsk({ icon: 'fa-broom', title: 'Clear Cache?', text: 'Saved app files (fonts, libraries) will be removed. Your downloads, bookmarks and history stay safe. The app needs internet once to work offline again.', yes: 'Clear Cache' }, stClearCache));
+    on('stClearAll', () => stAsk({ icon: 'fa-trash-can', title: 'Clear All Data?', text: 'Downloaded chapters, bookmarks, reading history and settings on this device will be deleted. This cannot be undone.', yes: 'Clear All' }, stClearAll));
+    on('stConfirmNo', stCloseConfirm);
+    on('stBackdrop', stCloseConfirm);
+    on('stConfirmYes', () => { const fn = stConfirmAction; stCloseConfirm(); if (fn) fn(); });
+});
+
+
+// ============================================================================
+//  SETTING MANAGEMENT  (Settings page): Auto Download / Keep Screen On / Low-end Mode / Battery Saver
+// ============================================================================
+function saveUserSettings() { safeSet(USER_SET_KEY, userSettings); }
+
+// ---- Keep Screen On: Screen Wake Lock while the Reader is open ----
+async function syncWakeLock() {
+    const want = userSettings.keepAwake && currentViewId === 'readerView' && !document.hidden;
+    try {
+        if (want && !wakeLock && navigator.wakeLock) {
+            wakeLock = await navigator.wakeLock.request('screen');
+            wakeLock.addEventListener('release', () => { wakeLock = null; });
+        } else if (!want && wakeLock) {
+            const w = wakeLock; wakeLock = null;
+            await w.release();
+        }
+    } catch (e) { wakeLock = null; }
+}
+document.addEventListener('visibilitychange', syncWakeLock);
+
+// ---- switches ----
+function stSyncSwitches() {
+    document.querySelectorAll('.st-switch[data-set]').forEach(b => {
+        const on = !!userSettings[b.dataset.set];
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+        b.classList.toggle('on', on);
+    });
+}
+
+async function stSetOption(name, value) {
+    if (name === 'keepAwake' && value && !('wakeLock' in navigator)) {
+        showToast('Keep Screen On is not supported in this browser', 'err'); return false;
+    }
+    userSettings[name] = value;
+    saveUserSettings();
+    if (name === 'battery') {
+        document.documentElement.classList.toggle('battery-saver', value);
+        startLatestHeroTimer();                      // autoplay stops / resumes
+    }
+    if (name === 'lite') {
+        document.documentElement.classList.toggle('lite', value);
+        startLatestHeroTimer();
+        if (value) showToast('Low-end Mode on - lighter animations', 'ok');
+    }
+    if (name === 'keepAwake') syncWakeLock();
+    return true;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    stSyncSwitches();
+    document.querySelectorAll('.st-switch[data-set]').forEach(b => {
+        b.addEventListener('click', async () => {
+            const name = b.dataset.set;
+            const target = !userSettings[name];
+            const ok = await stSetOption(name, target);
+            if (!ok) { userSettings[name] = false; saveUserSettings(); }
+            stSyncSwitches();
+        });
     });
 });
