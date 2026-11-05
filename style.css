@@ -2472,3 +2472,55 @@ html.lite .st-switch, html.lite .st-switch i { transition-duration: 0.1s !import
 html.lite .formula-manga-card, html.lite .showcase-card { transition: none !important; will-change: auto !important; }
 html.lite .formula-manga-card:hover, html.lite .showcase-card:hover { transform: none !important; }
 html.lite #sakuraCanvas, html.lite #sidebarSakuraCanvas { display: none !important; }
+
+/* ==========================================================================
+   DESKTOP LAYOUT (PC / laptop / phone in 'Desktop site' mode, >= 768px)
+   Everything is inside this one media query, so phones and tablets are untouched.
+   ========================================================================== */
+@media (min-width: 768px) {
+    /* page + header content sit in a centred 1280px column instead of stretching edge to edge */
+    main.relative { max-width: 1280px; margin-left: auto; margin-right: auto; padding: 24px 28px 48px; }
+    .sakura-header-bar > div { max-width: 1280px; margin-left: auto; margin-right: auto; padding-left: 28px; padding-right: 28px; }
+
+    /* manga grids: many columns, cards keep a sane size (ids beat the Tailwind utilities) */
+    #mainMangaGridContainer,
+    #genresGrid {
+        max-width: none;
+        grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+        gap: 24px;
+    }
+
+    /* hot trending: bigger cards */
+    #showcaseScrollContainer { gap: 20px; }
+    #showcaseScrollContainer .showcase-card { width: 190px; height: 262px; }
+
+    /* chapter lobby: readable width, centred */
+    #detailView { max-width: 1000px; margin-left: auto; margin-right: auto; }
+    #detailView .ch-grid { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 12px; }
+
+    /* genres page header + chips follow the same column */
+    #genresView { max-width: 1280px; margin-left: auto; margin-right: auto; }
+
+    /* history page: a bit wider than the phone card */
+    .hx-wrap { max-width: 640px; }
+
+    /* floating quick-menu: a little further from the corner on big screens */
+    .home-dock { right: 36px; bottom: 32px; }
+
+    /* reader top bar + search panel line up with the content column */
+    .reader-floating-top-bar > div { max-width: 768px; }
+    .search-drop-panel { max-width: 720px; }
+}
+
+/* real PC screens: more breathing room */
+@media (min-width: 1100px) {
+    main.relative { padding: 28px 40px 48px; }
+    .sakura-header-bar > div { padding-left: 40px; padding-right: 40px; }
+    #mainMangaGridContainer, #genresGrid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 28px; }
+}
+
+/* very large monitors: allow a few more columns */
+@media (min-width: 1600px) {
+    main.relative, .sakura-header-bar > div { max-width: 1440px; }
+    #mainMangaGridContainer, #genresGrid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+}
