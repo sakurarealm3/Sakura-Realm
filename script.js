@@ -16,6 +16,15 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const database = getDatabase(app);
 
+// Firebase App Check (blocks scripts/bots that call your database outside this site).
+// Paste your reCAPTCHA v3 / Enterprise site key here after enabling App Check in the console. Empty = skipped.
+const APP_CHECK_SITE_KEY = '';
+if (APP_CHECK_SITE_KEY) {
+    import("https://www.gstatic.com/firebasejs/13.0.0/firebase-app-check.js")
+        .then(({ initializeAppCheck, ReCaptchaV3Provider }) => initializeAppCheck(app, { provider: new ReCaptchaV3Provider(APP_CHECK_SITE_KEY), isTokenAutoRefreshEnabled: true }))
+        .catch(e => console.warn('App Check unavailable:', e));
+}
+
 // --- Global State & Shared Storage Keys ---
 const SHARED_STORAGE_KEY = "sakura_shared_master_mangas_v1";
 const PREFS_KEY = "sakura_reader_prefs_v1";
@@ -49,6 +58,25 @@ function safeSet(key, value) {
 }
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const cssUrl = (u) => 'url("' + String(u == null ? '' : u).replace(/\\/g, '%5C').replace(/"/g, '%22').replace(/'/g, '%27').replace(/\(/g, '%28').replace(/\)/g, '%29').replace(/[\r\n]/g, '') + '")';
+
+// --- Security helpers: anything that comes from the database is untrusted ---
+const FALLBACK_COVER = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000';
+const safeUrl = (u, fb = '') => {
+    try {
+        const s = String(u == null ? '' : u).trim();
+        if (s.length > 2048 && !/^data:image\//i.test(s)) return fb;
+        if (/^data:image\/(webp|png|jpe?g|gif|avif);base64,/i.test(s)) return s;
+        const x = new URL(s);
+        if (x.protocol === 'https:' || (x.protocol === 'http:' && location.protocol === 'http:')) return x.href;
+        return fb;
+    } catch (e) { return fb; }
+};
+const cleanList = (list) => (Array.isArray(list) ? list : []).filter(m => m && typeof m === 'object').map(m => Object.assign({}, m, {
+    image: safeUrl(m.image, FALLBACK_COVER),
+    chapters: (Array.isArray(m.chapters) ? m.chapters : []).map(c => Object.assign({}, c, {
+        pages: (Array.isArray(c.pages) ? c.pages : []).map(pg => ({ data: safeUrl(pg && pg.data) })).filter(pg => pg.data)
+    }))
+}));
 
 let currentMangaData = [];
 
@@ -121,7 +149,7 @@ function listenToFirebaseData() {
                             created: created,
                             title: c.chapter_title || `Chapter ${c.chapter_number || cKey}`,
                             date: d && !isNaN(d) ? d.toLocaleDateString() : 'Recent',
-                            pages: rawPages.filter(Boolean).map(pUrl => ({ data: pUrl }))
+                            pages: rawPages.map(pUrl => safeUrl(pUrl)).filter(Boolean).map(pUrl => ({ data: pUrl }))
                         };
                     });
                     // Newest / highest chapter first (so the LAST item is always Chapter 1)
@@ -137,11 +165,11 @@ function listenToFirebaseData() {
                 return {
                     id: key,
                     title: item.title || key,
-                    image: item.cover_image || item.image || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000',
+                    image: safeUrl(item.cover_image || item.image, FALLBACK_COVER),
                     coverType: item.coverType || 'Manga',
                     status: item.status || 'Ongoing',
                     rating: item.rating || '4.9 / 5.0',
-                    views: Number(item.views || 0),
+                    views: Math.max(0, Number(item.views) || 0),
                     createdAt: createdAt,
                     updatedAt: Math.max(createdAt, lastChapterAt),
                     lastChapterAt: lastChapterAt,
@@ -162,20 +190,20 @@ function listenToFirebaseData() {
             currentMangaData = formattedList;
             safeSet(SHARED_STORAGE_KEY, formattedList);
         } else {
-            currentMangaData = safeGet(SHARED_STORAGE_KEY, []);
+            currentMangaData = cleanList(safeGet(SHARED_STORAGE_KEY, []));
         }
         refreshCurrentView();
         populateFilterGenres();
     }, (error) => {
         console.warn("Firebase Read Warning/Fallback:", error);
-        currentMangaData = safeGet(SHARED_STORAGE_KEY, []);
+        currentMangaData = cleanList(safeGet(SHARED_STORAGE_KEY, []));
         refreshCurrentView();
         populateFilterGenres();
     });
 }
 
 function loadSharedMangas() {
-    return currentMangaData.length > 0 ? currentMangaData : safeGet(SHARED_STORAGE_KEY, []);
+    return currentMangaData.length > 0 ? currentMangaData : cleanList(safeGet(SHARED_STORAGE_KEY, []));
 }
 
 function refreshCurrentView() {
@@ -273,7 +301,14 @@ window.applyFilters = function() {
 };
 
 async function incrementMangaViewCount(mangaId) {
-    if (!mangaId) return;
+    if (!mangaId || !/^[\w-]{1,100}$/.test(String(mangaId))) return;
+    // Anti-spam: count one view per manga per 6 hours per browser
+    const VK = 'sakura_view_seen_v1', now = Date.now();
+    const seen = safeGet(VK, {});
+    if (seen[mangaId] && now - seen[mangaId] < 6 * 3600 * 1000) return;
+    seen[mangaId] = now;
+    Object.keys(seen).forEach(k => { if (now - seen[k] > 24 * 3600 * 1000) delete seen[k]; });
+    safeSet(VK, seen);
     holdOrderUntil = Date.now() + 3000;
     try {
         // Atomic server-side +1 (no read-then-write race)
@@ -1357,7 +1392,7 @@ const LOADER_FLOWER = (() => {
     for (let i = 0; i < 5; i++) {
         petals += `<path d="M0,-8 C-13,-30 0,-44 0,-44 C0,-44 13,-30 0,-8 Z" transform="rotate(${i * 72})" opacity="${(0.95 - i * 0.1).toFixed(2)}"/>`;
     }
-    return `<svg class="ld-flower" viewBox="-50 -50 100 100" aria-hidden="true"><g fill="#5fe0c2">${petals}</g><circle r="5" fill="#fff"/></svg>`;
+    return `<svg class="ld-flower" viewBox="-50 -50 100 100" aria-hidden="true"><g style="fill:rgb(var(--c300))">${petals}</g><circle r="5" fill="#fff"/></svg>`;
 })();
 
 function setLoaderLoading(loader) {
@@ -2070,14 +2105,14 @@ async function dustItems(items, opts) {
             tx.beginPath();
             if (tx.roundRect) tx.roundRect(0, 0, W, H, 10 * DPR); else tx.rect(0, 0, W, H);
             tx.clip();
-            tx.fillStyle = '#0f2124'; tx.fillRect(0, 0, W, H);
+            tx.fillStyle = tcol('bgc'); tx.fillRect(0, 0, W, H);
             if (img && img.naturalWidth) {
                 const sc = Math.max(W / img.naturalWidth, H / img.naturalHeight);
                 const w = img.naturalWidth * sc, h = img.naturalHeight * sc;
                 tx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
             } else {
                 const g = tx.createLinearGradient(0, 0, W, H);
-                g.addColorStop(0, '#2cc7a9'); g.addColorStop(1, '#ff8fab');
+                g.addColorStop(0, tcol('c400')); g.addColorStop(1, tcol('c300'));
                 tx.fillStyle = g; tx.fillRect(0, 0, W, H);
             }
             stx.drawImage(tc, r.tr.left, r.tr.top, PW / DPR, PH / DPR);
@@ -2280,16 +2315,91 @@ function setupSearch() {
     });
 }
 
-window.toggleDarkMode = function() {
-    const html = document.documentElement;
-    const icon = document.getElementById('themeIcon');
-    if (html.classList.contains('dark')) {
-        html.classList.remove('dark');
-        icon.className = "fa-solid fa-sun text-sm sm:text-base text-amber-500";
-    } else {
-        html.classList.add('dark');
-        icon.className = "fa-solid fa-moon text-sm sm:text-base text-sakura-300";
-    }
+// ============================================================================
+//  COLOUR THEMES  (replaces the old day / night toggle)
+//  The palettes live in style.css (html[data-theme=...]); JS only switches the attribute
+//  and tells the canvas scenes to re-read the colours.
+// ============================================================================
+const THEME_KEY = 'sakura_theme_v1';
+const THEMES = [
+    { id: 'teal',   name: 'Sakura Teal', a: '#5fe0c2', b: '#0ea691', bg: '#060e10', tag: 'Original' },
+    { id: 'rose',   name: 'Rose',        a: '#ff8fab', b: '#e13e70', bg: '#10070b' },
+    { id: 'violet', name: 'Violet',      a: '#b7a4ff', b: '#7c5ce8', bg: '#0a0814' },
+    { id: 'amber',  name: 'Amber',       a: '#ffcf78', b: '#f58e14', bg: '#100b06' },
+    { id: 'aurora', name: 'Aurora',      a: '#5fe0c2', b: '#7c5ce8', bg: '#070a14', tag: 'Blend' },
+    { id: 'sunset', name: 'Sunset',      a: '#ffbe6e', b: '#e83e70', bg: '#100810', tag: 'Blend' }
+];
+// current palette as [r,g,b] arrays, read from the CSS variables (used by the canvas scenes)
+const THEME_RGB = {};
+function readThemeColors() {
+    const cs = getComputedStyle(document.documentElement);
+    ['c50', 'c100', 'c300', 'c400', 'c500', 'c600', 'c900', 'bgb', 'bgs', 'bgc'].forEach(k => {
+        const p = cs.getPropertyValue('--' + k).split(',').map(n => parseInt(n, 10));
+        THEME_RGB[k] = p.length === 3 && p.every(n => !isNaN(n)) ? p : [128, 128, 128];
+    });
+}
+function tcol(k, a) { const c = THEME_RGB[k] || [128, 128, 128]; return a === undefined ? `rgb(${c[0]},${c[1]},${c[2]})` : `rgba(${c[0]},${c[1]},${c[2]},${a})`; }
+// colour k mixed with [r,g,b] target: t = 0 -> k, t = 1 -> target
+function tmix(k, to, t) { const c = THEME_RGB[k] || [128, 128, 128]; return `rgb(${Math.round(c[0] + (to[0] - c[0]) * t)},${Math.round(c[1] + (to[1] - c[1]) * t)},${Math.round(c[2] + (to[2] - c[2]) * t)})`; }
+
+readThemeColors();
+
+function applyTheme(id, save) {
+    if (!THEMES.some(t => t.id === id)) id = 'teal';
+    document.documentElement.setAttribute('data-theme', id);
+    const th = THEMES.find(t => t.id === id);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', th.bg);
+    if (save) safeSet(THEME_KEY, id);
+    readThemeColors();
+    // canvas scenes keep pre-drawn sprites: rebuild them with the new colours
+    sSprites = null;
+    if (typeof initSidebarScene === 'function' && sidebarCanvas && sWidth) { try { initSidebarScene(); } catch (e) {} }
+    document.querySelectorAll('.theme-opt').forEach(b => {
+        const on = b.dataset.theme === id;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+}
+
+function buildThemePicker() {
+    const grid = document.getElementById('themeGrid');
+    if (!grid || grid.childElementCount) return;
+    THEMES.forEach(t => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'theme-opt';
+        b.dataset.theme = t.id;
+        b.setAttribute('role', 'menuitemradio');
+        b.innerHTML = `<span class="tp-sw" style="background:linear-gradient(135deg, ${t.a} 0%, ${t.a} 38%, ${t.b} 100%)"></span>` +
+            `<span class="tp-name"><span>${t.name}</span>${t.tag ? `<span class="tp-tag">${t.tag}</span>` : ''}</span>` +
+            `<span class="tp-check"><i class="fa-solid fa-check"></i></span>`;
+        b.onclick = (ev) => { ev.stopPropagation(); applyTheme(t.id, true); };
+        grid.appendChild(b);
+    });
+}
+
+let themeOutsideBound = false;
+function closeThemePicker() {
+    const pop = document.getElementById('themePicker'), btn = document.getElementById('themeToggleBtn');
+    if (pop) { pop.classList.remove('open'); pop.setAttribute('aria-hidden', 'true'); }
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+window.toggleThemePicker = function() {
+    const pop = document.getElementById('themePicker'), btn = document.getElementById('themeToggleBtn');
+    if (!pop) return;
+    buildThemePicker();
+    const open = !pop.classList.contains('open');
+    if (open) {
+        pop.classList.add('open'); pop.setAttribute('aria-hidden', 'false');
+        if (btn) btn.setAttribute('aria-expanded', 'true');
+        applyTheme(document.documentElement.getAttribute('data-theme') || 'teal', false);   // mark the active one
+        if (!themeOutsideBound) {
+            themeOutsideBound = true;
+            document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.theme-wrap')) closeThemePicker(); }, true);
+            document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeThemePicker(); });
+        }
+    } else closeThemePicker();
 };
 
 window.toggleRightSidebar = function() {
@@ -2300,9 +2410,11 @@ window.toggleRightSidebar = function() {
     if (isOpen) {
         sidebar.classList.add('translate-x-full');
         backdrop.classList.add('opacity-0', 'pointer-events-none');
+        document.documentElement.classList.remove('sidebar-open');   // let the page scroll again
     } else {
         sidebar.classList.remove('translate-x-full');
         backdrop.classList.remove('opacity-0', 'pointer-events-none');
+        document.documentElement.classList.add('sidebar-open');      // page behind must not scroll while the menu is open
         setTimeout(resizeSidebarCanvas, 50);
     }
 };
@@ -2351,10 +2463,10 @@ function makeBlossomSprite(variant) {
     c.width = c.height = S;
     const x = c.getContext('2d');
     x.translate(S / 2, S / 2);
-    const pal = [['#6fe3c9', '#f3fffb'], ['#5fd3e6', '#eefcff'], ['#b7a4ff', '#f7f2ff']][variant];
+    const pal = [[tcol('c300'), tcol('c50')], [tcol('c400'), tcol('c100')], [tmix('c500', [255, 255, 255], 0.45), tmix('c50', [255, 255, 255], 0.4)]][variant];
     let g = x.createRadialGradient(0, 0, 3, 0, 0, S / 2);
-    g.addColorStop(0, 'rgba(150,255,230,0.42)');
-    g.addColorStop(1, 'rgba(150,255,230,0)');
+    g.addColorStop(0, tcol('c300', 0.42));
+    g.addColorStop(1, tcol('c300', 0));
     x.fillStyle = g;
     x.beginPath(); x.arc(0, 0, S / 2, 0, Math.PI * 2); x.fill();
     for (let p = 0; p < 5; p++) {
@@ -2370,11 +2482,11 @@ function makeBlossomSprite(variant) {
         x.bezierCurveTo(17, -28, 15, -8, 0, 0);
         x.closePath(); x.fill();
         x.strokeStyle = 'rgba(255,255,255,0.55)'; x.lineWidth = 0.8; x.stroke();
-        x.strokeStyle = 'rgba(14,166,145,0.35)';
+        x.strokeStyle = tcol('c500', 0.35);
         x.beginPath(); x.moveTo(0, -5); x.lineTo(0, -24); x.stroke();
         x.restore();
     }
-    x.fillStyle = '#0b8a79';
+    x.fillStyle = tcol('c600');
     x.beginPath(); x.arc(0, 0, 4.2, 0, Math.PI * 2); x.fill();
     for (let i = 0; i < 8; i++) {                    // stamens
         const a = i * 0.785 + 0.2, l = 9 + (i * 7) % 4;
@@ -2392,7 +2504,7 @@ function makeBudSprite() {
     const x = c.getContext('2d');
     x.translate(16, 30);
     const g = x.createLinearGradient(0, 0, 0, -26);
-    g.addColorStop(0, '#6fe3c9'); g.addColorStop(1, '#f3fffb');
+    g.addColorStop(0, tcol('c300')); g.addColorStop(1, tcol('c50'));
     x.fillStyle = g;
     x.beginPath();
     x.moveTo(0, 0);
@@ -2400,7 +2512,7 @@ function makeBudSprite() {
     x.bezierCurveTo(9, -22, 11, -6, 0, 0);
     x.fill();
     x.strokeStyle = 'rgba(255,255,255,0.5)'; x.lineWidth = 0.8; x.stroke();
-    x.fillStyle = '#12806f';                         // calyx
+    x.fillStyle = tcol('c600');                         // calyx
     x.beginPath(); x.ellipse(0, -1, 5.5, 3.2, 0, 0, Math.PI * 2); x.fill();
     return c;
 }
@@ -2411,7 +2523,7 @@ function makePetalSprite() {
     const x = c.getContext('2d');
     x.translate(14, 32);
     const g = x.createLinearGradient(0, 0, 0, -28);
-    g.addColorStop(0, '#6fe3c9'); g.addColorStop(1, '#f3fffb');
+    g.addColorStop(0, tcol('c300')); g.addColorStop(1, tcol('c50'));
     x.fillStyle = g;
     x.beginPath();
     x.moveTo(0, 0);
@@ -2495,18 +2607,18 @@ class SBranch {
         for (let i = 1; i <= N; i++) ctx.lineTo(up[i][0], up[i][1]);
         for (let i = N; i >= 0; i--) ctx.lineTo(dn[i][0], dn[i][1]);
         ctx.closePath();
-        ctx.fillStyle = this.depth === 0 ? '#2a554a' : '#2f5c50';
+        ctx.fillStyle = this.depth === 0 ? tmix('c600', [30, 40, 40], 0.6) : tmix('c600', [40, 50, 50], 0.55);
         ctx.fill();
         ctx.beginPath();                                       // soft rim light on one side of the bark
         ctx.moveTo(up[0][0], up[0][1]);
         for (let i = 1; i <= N; i++) ctx.lineTo(up[i][0], up[i][1]);
-        ctx.strokeStyle = 'rgba(150,245,220,0.42)';
+        ctx.strokeStyle = tcol('c300', 0.42);
         ctx.lineWidth = 1;
         ctx.stroke();
         for (const k of this.kids) {
             ctx.beginPath();                                   // blend the joint
             ctx.arc(k.sx, k.sy, k.w / 2, 0, Math.PI * 2);
-            ctx.fillStyle = '#2f5c50';
+            ctx.fillStyle = tmix('c600', [40, 50, 50], 0.55);
             ctx.fill();
             k.drawWood(ctx);
         }
@@ -2520,7 +2632,7 @@ class SBranch {
             ctx.rotate(a);
             const L = lf.len;
             const g = ctx.createLinearGradient(0, 0, L, 0);
-            g.addColorStop(0, '#0e5d52'); g.addColorStop(1, '#2bb89c');
+            g.addColorStop(0, tmix('c600', [0, 0, 0], 0.35)); g.addColorStop(1, tcol('c400'));
             ctx.fillStyle = g;
             ctx.beginPath();
             ctx.moveTo(0, 0);
@@ -2651,17 +2763,17 @@ if (sidebarCanvas && sCtx) {
 
         // night sky + soft glows
         const bg = ctx.createLinearGradient(0, 0, 0, H);
-        bg.addColorStop(0, '#050d10'); bg.addColorStop(0.55, '#07161a'); bg.addColorStop(1, '#0a2024');
+        bg.addColorStop(0, tmix('bgb', [0, 0, 0], 0.15)); bg.addColorStop(0.55, tcol('bgs')); bg.addColorStop(1, tcol('bgc'));
         ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
         let g = ctx.createRadialGradient(W * 0.22, H * 0.16, 0, W * 0.22, H * 0.16, W * 0.85);
-        g.addColorStop(0, 'rgba(95,224,194,0.17)'); g.addColorStop(1, 'rgba(95,224,194,0)');
+        g.addColorStop(0, tcol('c300', 0.17)); g.addColorStop(1, tcol('c300', 0));
         ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
         g = ctx.createRadialGradient(W, H * 0.86, 0, W, H * 0.86, W * 0.9);
         g.addColorStop(0, 'rgba(150,120,240,0.14)'); g.addColorStop(1, 'rgba(150,120,240,0)');
         ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
         for (const s of sStars) {
             ctx.globalAlpha = 0.25 + 0.55 * (0.5 + 0.5 * Math.sin(time * s.sp + s.ph));
-            ctx.fillStyle = '#d9fff5';
+            ctx.fillStyle = tcol('c50');
             ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
         }
         ctx.globalAlpha = 1;
@@ -2735,7 +2847,7 @@ function initSakuraPetals() {
             ctx.translate(p.x, p.y);
             ctx.rotate((p.rotation * Math.PI) / 180);
             ctx.globalAlpha = p.opacity;
-            ctx.fillStyle = '#8ff0da';
+            ctx.fillStyle = tcol('c300');
             ctx.beginPath();
             ctx.ellipse(0, 0, p.size, p.size * 1.5, 0, 0, Math.PI * 2);
             ctx.fill();
@@ -3159,7 +3271,7 @@ function dlCancelOrRemove(id) {
 
 // ---- Download Management list (History page) ----
 function dmUpdateProgress(e) {
-    const row = document.querySelector('.dm-item[data-id="' + e.id + '"]');
+    const row = document.querySelector('.dm-item[data-id="' + CSS.escape(String(e.id)) + '"]');
     if (!row) return;
     const pct = e.total ? Math.round(e.done / e.total * 100) : 0;
     const bar = row.querySelector('.dm-bar > i'), cnt = row.querySelector('.dm-count');
@@ -3395,4 +3507,99 @@ document.addEventListener('DOMContentLoaded', () => {
             stSyncSwitches();
         });
     });
+});
+
+
+// ============================================================================
+//  ABOUT & LEGAL  (Settings page): Terms / Privacy
+// ============================================================================
+const LEGAL_SITE = 'Sakura Realm';
+const LEGAL_UPDATED = '5 November 2026';
+// Put your real contact (email or page link) here.  Shown in every legal text.  Left empty = generic wording.
+const LEGAL_CONTACT = '';
+const legalContactLine = () => LEGAL_CONTACT
+    ? 'Contact: ' + LEGAL_CONTACT
+    : 'Contact: through the contact link of the page or community where you found ' + LEGAL_SITE + '.';
+
+// each section: [heading, [ 'paragraph' | ['bullet', 'bullet'] , ... ]]
+const LEGAL_DOCS = {
+    terms: {
+        icon: 'fa-file-contract', title: 'Terms of Service',
+        intro: '',
+        sections: [
+            ['1. About & Service', ['Sakura Realm is a website for reading manga online and offline. While it is currently free to use, pricing or subscription systems may be introduced in the future. Your reading progress, history, and settings are stored locally on your own device.']],
+            ['2. Usage Rules', ['You may use the website for your own personal, non-commercial reading. You must not download chapters and share, sell, or re-upload them anywhere else.']],
+            ['3. Copyright & Takedown', ['All manga, covers, titles, characters, and artwork belong to their respective authors, artists, and publishers. Sakura Realm does not claim ownership of them. If requested by the respective copyright owners, the requested manga will be immediately removed from the website.']],
+            ['4. Content & Age', ['Some titles may contain mature themes or content. You are responsible for deciding what is suitable for you. If you are under the age of majority, please use the site together with a parent or guardian.']],
+            ['5. Changes to Site', ['Titles may be added or removed without notice, and the website may be changed, updated, or paused at any time.']],
+            ['6. Limitation of Liability', ['The website is provided "as is" and "as available" without warranties of any kind. The site operator is not liable for any data loss, damages, or issues arising from your use of the website.']]
+        ]
+    },
+    privacy: {
+        icon: 'fa-user-shield', title: 'Privacy Policy',
+        intro: '',
+        sections: [
+            ['1. Information We Collect', [
+                '<b>Account information:</b> If account and paid membership features are introduced in the future, we will collect the email, password and membership period details needed to create an account.',
+                '<b>Data stored on your device:</b> Your bookmarks, reading history, downloaded manga and settings are stored only on your own device (Local Storage and IndexedDB).']],
+            ['2. How We Use Your Data', ['Your data is used only to verify your account login, manage your membership period and let you read manga on the website. We will never use your personal information for advertising, and we will never sell it to anyone else.']],
+            ['3. Third-Party Services', ['To keep the website and manga images working normally, we connect to Google Firebase, CDNs and Image Hosts. These services may therefore be able to see your IP address.']],
+            ['4. Data Control & Security', ['You can clear the data on your device at any time from Settings. Account information will be protected using secure systems (HTTPS).']],
+            ['5. Changes to This Policy', ['If our services or the way we handle data change, we will update this Privacy Policy page together with the date.']]
+        ]
+    }
+};
+
+function legalRender(key) {
+    const my = (window.sakuraLang && window.sakuraLang() === 'my' && window.LEGAL_DOCS_MY) ? window.LEGAL_DOCS_MY : null;
+    const d = (my && my[key]) || LEGAL_DOCS[key];
+    const body = document.getElementById('legalBody');
+    if (!d || !body) return false;
+    document.getElementById('legalTitle').textContent = d.title;
+    document.getElementById('legalIcon').className = 'fa-solid ' + d.icon;
+    // text comes from the constants above (not from users), so inline <b> / entities are safe to render
+    const rich = (t) => String(t);
+    let html = '<span class="lg-upd">' + (my && my[key] ? my.updated : 'Last updated: ' + LEGAL_UPDATED) + '</span>' + (d.intro ? '<p class="lg-intro">' + rich(d.intro) + '</p>' : '');
+    d.sections.forEach(sec => {
+        html += '<h4>' + sec[0] + '</h4>';
+        sec[1].forEach(part => {
+            if (Array.isArray(part)) html += '<ul>' + part.map(li => '<li>' + rich(li) + '</li>').join('') + '</ul>';
+            else html += '<p>' + rich(part) + '</p>';
+        });
+    });
+    html += '<p class="lg-end">' + LEGAL_SITE + ' &copy; ' + new Date().getFullYear() + '</p>';
+    body.innerHTML = html;
+    body.scrollTop = 0;
+    return true;
+}
+
+let legalOpen = false;
+window.openLegal = function(key) {
+    if (!legalRender(key)) return;
+    legalOpen = true;
+    document.getElementById('legalBackdrop').classList.add('show');
+    const sheet = document.getElementById('legalSheet');
+    sheet.classList.add('show');
+    sheet.setAttribute('aria-hidden', 'false');
+};
+window.closeLegal = function() {
+    legalOpen = false;
+    document.getElementById('legalSheet')?.classList.remove('show');
+    document.getElementById('legalSheet')?.setAttribute('aria-hidden', 'true');
+    document.getElementById('legalBackdrop')?.classList.remove('show');
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    const yr = document.getElementById('stYear');
+    if (yr) yr.textContent = new Date().getFullYear();
+    document.querySelectorAll('.st-link[data-legal]').forEach(b => b.addEventListener('click', () => openLegal(b.dataset.legal)));
+});
+// Esc closes the sheet; leaving the page with the phone Back button closes it too
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && legalOpen) closeLegal(); });
+window.addEventListener('popstate', () => { if (legalOpen) closeLegal(); });
+
+
+// theme: mark the saved one in the picker + browser bar colour (the palette itself is applied before first paint)
+document.addEventListener('DOMContentLoaded', () => {
+    applyTheme(safeGet(THEME_KEY, 'teal'), false);
 });
