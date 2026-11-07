@@ -182,17 +182,70 @@ function listenToLayoutControl() {
     }, (err) => console.warn('Layout Control read skipped:', err && err.code));
 }
 
+// Some networks / VPNs / browsers block Firebase's WebSocket. The SDK then tries "long polling", which this
+// page's Content-Security-Policy does not allow, so the lists stay empty. Safety net: if the SDK has not
+// answered within a few seconds (or reports an error), read the same data with a plain HTTPS request instead
+// (allowed by connect-src) and keep refreshing it, until the live SDK connection works.
+let fbProblem = '';
+const sdkLive = { [MAIN_NODE]: false, [ADULT_NODE]: false };
+// If nothing arrived after 12 s, tell the reader WHY on screen (instead of a silent empty page) + a Retry button
+let gotAnyData = false;
+setTimeout(function checkNoData() {
+    if (gotAnyData || sdkLive[MAIN_NODE] || sdkLive[ADULT_NODE] || (typeof currentMangaData !== 'undefined' && currentMangaData.length)) return;
+    if (document.getElementById('netProblem')) return;
+    const b = document.createElement('div');
+    b.id = 'netProblem';
+    b.style.cssText = 'position:fixed;left:12px;right:12px;bottom:14px;z-index:99999;padding:12px 14px;border-radius:14px;background:#2a1410;color:#ffd9c9;border:1px solid #d9774a;font:13px/1.45 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.5)';
+    const reason = fbProblem || 'no answer from the server';
+    b.innerHTML = '<b>Cannot load the manga list.</b><br>Your network, VPN, ad-blocker or private DNS may be blocking the database. Try another browser or turn the blocker off.<br><small style="opacity:.75">Reason: ' + String(reason).replace(/[<>&]/g, '') + '</small><div style="margin-top:8px"><button style="padding:6px 14px;border-radius:99px;border:0;background:#d9774a;color:#fff;font-weight:700" onclick="location.reload()">Retry</button> <button style="padding:6px 14px;border-radius:99px;border:1px solid #d9774a;background:none;color:#ffd9c9" onclick="this.closest(\'#netProblem\').remove()">Close</button></div>';
+    document.body.appendChild(b);
+}, 12000);
+const restOn = { [MAIN_NODE]: false, [ADULT_NODE]: false };
+const REST_EVERY_MS = 45000;
+function startRestFallback(node) {
+    if (restOn[node]) return;
+    restOn[node] = true;
+    const pull = async () => {
+        if (sdkLive[node]) return;                                   // live connection is working: nothing to do
+        try {
+            const ctl = ('AbortController' in window) ? new AbortController() : null;
+            const to = ctl ? setTimeout(() => ctl.abort(), 15000) : null;
+            const r = await fetch(`${firebaseConfig.databaseURL}/${node}.json`, { cache: 'no-store', signal: ctl ? ctl.signal : undefined });
+            if (to) clearTimeout(to);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const v = await r.json();
+            if (sdkLive[node]) return;
+            rawNodes[node] = v;
+            nodeLoaded[node] = true;
+            gotAnyData = true;
+            { const nb = document.getElementById('netProblem'); if (nb) nb.remove(); }
+            rebuildMangaData();
+        } catch (e) {
+            fbProblem = 'REST ' + node + ': ' + ((e && (e.message || e.name)) || e);
+            console.warn('Firebase REST fallback failed (' + node + '):', e);
+            if (!nodeLoaded[node]) { nodeLoaded[node] = true; rebuildMangaData(); }   // do not wait forever: show the saved copy
+        }
+    };
+    pull();
+    setInterval(pull, REST_EVERY_MS);
+}
+
 function listenToFirebaseData() {
     const onNode = (node) => {
+        setTimeout(() => { if (!sdkLive[node]) startRestFallback(node); }, 4000);
         onValue(ref(database, node), (snapshot) => {
+            sdkLive[node] = true; gotAnyData = true;
+            { const nb = document.getElementById('netProblem'); if (nb) nb.remove(); }
             rawNodes[node] = snapshot.val();
             nodeLoaded[node] = true;
             rebuildMangaData();
         }, (error) => {
+            fbProblem = 'SDK ' + node + ': ' + ((error && (error.code || error.message)) || error);
             console.warn('Firebase Read Warning/Fallback (' + node + '):', error);
             rawNodes[node] = null;
             nodeLoaded[node] = true;
             rebuildMangaData();
+            startRestFallback(node);
         });
     };
     onNode(MAIN_NODE);
@@ -525,12 +578,20 @@ window.setImageQuality = function(quality) {
     toggleSettingsModal();
 };
 
-// Downscale by WIDTH (so tall webtoon strips stay readable), skip if already small enough
+// Downscale by WIDTH (so tall webtoon strips stay readable), skip if already small enough.
+// Phones with little memory (or old browsers) cannot always draw big canvases: they give back a BLANK picture
+// with no error. So: keep canvases small, check the result is really a picture, and always fall back to the
+// original image if anything looks wrong (never leave the page empty).
+const MAX_CANVAS_PIXELS = 4000000;    // ~4 MP: safe even on low-end Android / old iPhones
+const MAX_CANVAS_SIDE = 4096;
 function loadDownscaledImage(originalUrl, imgElement) {
+    const useOriginal = () => { imgElement.onerror = imgElement._origOnError || imgElement.onerror; imgElement.src = originalUrl; };
     if (currentImageQuality === 'high') {
         imgElement.src = originalUrl;
         return;
     }
+    // if the shrunk copy fails to show, show the original instead (only once)
+    if (!imgElement._origOnError) imgElement._origOnError = imgElement.onerror;
     const maxWidth = currentImageQuality === 'low' ? 540 : 800;
     const jpegQuality = currentImageQuality === 'low' ? 0.55 : 0.78;
     const probe = new Image();
@@ -538,21 +599,45 @@ function loadDownscaledImage(originalUrl, imgElement) {
     probe.onload = function() {
         const w = probe.naturalWidth, h = probe.naturalHeight;
         const outH = Math.round(h * (maxWidth / w));
-        if (!w || !h || w <= maxWidth || outH > 16000) {
-            imgElement.src = originalUrl;
+        if (!w || !h || w <= maxWidth || outH > MAX_CANVAS_SIDE || maxWidth * outH > MAX_CANVAS_PIXELS) {
+            useOriginal();
             return;
         }
         try {
             const canvas = document.createElement('canvas');
             canvas.width = maxWidth;
             canvas.height = outH;
-            canvas.getContext('2d').drawImage(probe, 0, 0, canvas.width, canvas.height);
-            imgElement.src = canvas.toDataURL('image/jpeg', jpegQuality);
+            const ctx = canvas.getContext('2d');
+            if (!ctx) { useOriginal(); return; }
+            ctx.drawImage(probe, 0, 0, canvas.width, canvas.height);
+            // blank-canvas check: sample a few pixels; a failed canvas is fully transparent
+            let blank = true;
+            try {
+                const pts = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.75], [0.5, 0.1], [0.5, 0.9]];
+                for (const [fx, fy] of pts) {
+                    const d = ctx.getImageData(Math.floor(fx * (canvas.width - 1)), Math.floor(fy * (canvas.height - 1)), 1, 1).data;
+                    if (d[3] !== 0) { blank = false; break; }
+                }
+            } catch (e) { blank = false; }
+            if (blank) { useOriginal(); return; }
+            if (canvas.toBlob) {
+                canvas.toBlob((blob) => {
+                    if (!blob || blob.size < 200) { useOriginal(); return; }
+                    const u = URL.createObjectURL(blob);
+                    imgElement.onerror = () => { URL.revokeObjectURL(u); useOriginal(); };
+                    imgElement.src = u;
+                }, 'image/jpeg', jpegQuality);
+            } else {
+                const data = canvas.toDataURL('image/jpeg', jpegQuality);
+                if (!data || data.length < 300) { useOriginal(); return; }
+                imgElement.onerror = useOriginal;
+                imgElement.src = data;
+            }
         } catch (e) {
-            imgElement.src = originalUrl;
+            useOriginal();
         }
     };
-    probe.onerror = function() { imgElement.src = originalUrl; };
+    probe.onerror = function() { useOriginal(); };
     probe.src = originalUrl;
 }
 
