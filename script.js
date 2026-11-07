@@ -2970,7 +2970,8 @@ window.addEventListener('DOMContentLoaded', () => {
     listenToFirebaseData();
     listenToLayoutControl();
     restoreViewFromHash();
-    
+    document.documentElement.classList.remove('boot-deep');   // router has chosen the page: Home may show again if it is the target
+
     window.addEventListener('storage', (e) => {
         if (e.key === SHARED_STORAGE_KEY) {
             refreshCurrentView();
