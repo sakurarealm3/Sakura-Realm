@@ -9,6 +9,16 @@
     // (upper/lower case does not matter). Text with a number or name inside goes in P (patterns) further down.
     var D = {
         /* header / search */
+        /* adult content */
+        'Adult Content': 'အရွယ်ရောက်ပြီးသူ အကြောင်းအရာ',
+        'This section contains mature manga made for adults only. Only adult manga will be shown and the normal manga will be hidden.': 'ဤအပိုင်းတွင် အရွယ်ရောက်ပြီးသူများအတွက်သာ ရည်ရွယ်သော မန်ဂါများ ပါဝင်သည်။ အရွယ်ရောက်ပြီးသူ မန်ဂါများကိုသာ ပြပြီး ပုံမှန်မန်ဂါများကို ဖျောက်ထားမည်။',
+        'Are you 18 years or older?': 'သင် အသက် ၁၈ နှစ် ပြည့်ပြီလား?', 'I am 18 or older': 'ကျွန်ုပ် အသက် ၁၈ နှစ် ပြည့်ပြီ',
+        'Adult Content (18+)': 'အရွယ်ရောက်ပြီးသူ အကြောင်းအရာ (၁၈+)', 'Show adult manga only and hide the normal manga': 'အရွယ်ရောက်ပြီးသူ မန်ဂါများကိုသာ ပြပြီး ပုံမှန်မန်ဂါများကို ဖျောက်ထားမည်',
+        'Adult Content on - showing 18+ manga only': 'Adult Content ဖွင့်ထားသည် - ၁၈+ မန်ဂါများသာ ပြနေသည်', 'Adult Content off': 'Adult Content ပိတ်ထားသည်',
+        'Jelly Touch': 'ဂျယ်လီ ထိတွေ့မှု', 'Home and History pictures wobble like jelly when touched': 'ထိလိုက်လျှင် ပင်မနှင့် မှတ်တမ်းစာမျက်နှာရှိ ပုံများ ဂျယ်လီကဲ့သို့ လှုပ်ခါမည်',
+        'Jelly Touch on': 'Jelly Touch ဖွင့်ထားသည်', 'Jelly Touch off': 'Jelly Touch ပိတ်ထားသည်',
+        'Battery Saving': 'ဘက်ထရီ ချွေတာမုဒ်', 'Manga Detail': 'မန်ဂါ အသေးစိတ်',
+        'Could not save offline (storage full or private mode)': 'ဒေါင်းလုဒ် သိမ်း၍မရပါ (သိုလှောင်ခန်း ပြည့်နေသည် သို့မဟုတ် private mode ဖြစ်နေသည်)',
         'Search': 'ရှာဖွေရန်', 'Colour Theme': 'အရောင်အသွေး ပုံစံ', 'Menu': 'မီနူး',
         'Search manga titles...': 'မန်ဂါ အမည်များ ရှာဖွေပါ...', 'Search manga titles': 'မန်ဂါ အမည်များ ရှာဖွေပါ',
         'Clear text': 'စာသား ဖျက်ရန်', 'Cancel': 'ပယ်ဖျက်', 'Close': 'ပိတ်ရန်',
