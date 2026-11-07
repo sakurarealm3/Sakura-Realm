@@ -2753,12 +2753,8 @@ html.lang-my .lang-trigger, html.lang-my .lang-menu li { font-size: 13px; line-h
 
 /* ===== Adult Content mode: other characters + rose/wine colours instead of Reze / Makima ===== */
 html.adult-mode { --wh-art: url("adult-hero.webp"); }
-html.adult-mode .wh-left {
-    background:
-        radial-gradient(80% 70% at 76% 30%, rgba(255, 190, 210, 0.45), transparent 62%),
-        linear-gradient(150deg, #e0457b 0%, #b8265f 46%, #7d1745 100%);
-}
-html.adult-mode .wh-reze { filter: drop-shadow(0 0 9px rgba(255, 190, 210, 0.55)) drop-shadow(0 10px 12px rgba(90, 10, 40, 0.5)); }
+/* Latest Update box: the left panel colour and the picture glow now come from the chosen theme (--c100/--c400/--c500/--c600/--c900),
+   the same as in normal mode, so it changes together with the theme. Only the picture itself differs in Adult mode. */
 html.adult-mode .hx-makima { filter: drop-shadow(0 0 16px rgba(190, 80, 255, 0.4)) drop-shadow(0 10px 16px rgba(0, 0, 0, 0.65)); }
 
 /* =====================================================================
