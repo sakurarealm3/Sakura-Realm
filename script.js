@@ -31,7 +31,7 @@ const PREFS_KEY = "sakura_reader_prefs_v1";
 const BOOKMARK_KEY = "sakura_bookmarks_v1";
 const USER_SET_KEY = "sakura_user_settings_v1";
 // User settings (all OFF by default)
-const userSettings = Object.assign({ autoDl: false, keepAwake: false, battery: false, lite: undefined }, safeGet(USER_SET_KEY, {}));
+const userSettings = Object.assign({ autoDl: false, keepAwake: false, battery: false, adult: false, jelly: true, lite: undefined }, safeGet(USER_SET_KEY, {}));
 delete userSettings.notify; delete userSettings.fcmKey; delete userSettings.fcmAt;
 // Low-end Mode: switched on automatically on weak phones (<=2 GB RAM / <=2 CPU cores) until the user chooses
 if (typeof userSettings.lite !== 'boolean') {
@@ -42,6 +42,20 @@ let currentViewId = '';
 let wakeLock = null;
 document.documentElement.classList.toggle('battery-saver', !!userSettings.battery);
 document.documentElement.classList.toggle('lite', !!userSettings.lite);
+document.documentElement.classList.toggle('jelly-off', userSettings.jelly === false);   // Jelly Touch switch (Settings)
+// Adult Content mode: swaps the Home hero character and the History character (images: adult-hero.webp, adult-history.webp)
+function applyAdultArt() {
+    const on = !!userSettings.adult;
+    document.documentElement.classList.toggle('adult-mode', on);
+    document.querySelectorAll('img.hx-makima').forEach(img => {
+        const want = on ? 'adult-history.webp' : 'makima.webp';
+        img.style.visibility = '';
+        img.onerror = () => { img.style.visibility = 'hidden'; };       // file not added yet -> show nothing, never the normal character
+        if (img.getAttribute('src') !== want) img.setAttribute('src', want);
+    });
+}
+applyAdultArt();
+document.addEventListener('DOMContentLoaded', applyAdultArt);
 
 // --- Safe helpers (storage + HTML escaping) ---
 function safeGet(key, fallback) {
@@ -129,13 +143,71 @@ function chapterNumber(c, key) {
     return m ? Number(m[1]) : NaN;
 }
 
+// Normal manga live in  manga_list,  adult manga live in  adult_list  (kept apart in Firebase)
+const MAIN_NODE = 'manga_list';
+const ADULT_NODE = 'adult_list';
+const rawNodes = { [MAIN_NODE]: null, [ADULT_NODE]: null };
+const nodeLoaded = { [MAIN_NODE]: false, [ADULT_NODE]: false };
+
+// --- Layout Control: picture size / position set from the Uploader (Firebase node "layoutControl") ---
+const LAYOUT_CACHE_KEY = 'sakura_layout_v1';
+const LAYOUT_VARS = {
+    normal: { hero: ['--nh-size', '--nh-x', '--nh-y'], history: ['--nhist-size', '--nhist-x', '--nhist-y'] },
+    adult:  { hero: ['--ah-size', '--ah-x', '--ah-y'],  history: ['--ahist-size', '--ahist-x', '--ahist-y'] }
+};
+const LAYOUT_LIMITS = { size: [20, 300], x: [-500, 500], y: [-500, 500] };   // safety: only plain numbers inside these limits are applied
+function applyLayoutControl(data) {
+    if (!data || typeof data !== 'object') return;
+    const root = document.documentElement;
+    Object.keys(LAYOUT_VARS).forEach(mode => {
+        Object.keys(LAYOUT_VARS[mode]).forEach(part => {
+            const src = data[mode] && data[mode][part];
+            if (!src || typeof src !== 'object') return;
+            ['size', 'x', 'y'].forEach((key, i) => {
+                const n = Number(src[key]);
+                if (!isFinite(n)) return;
+                const [lo, hi] = LAYOUT_LIMITS[key];
+                root.style.setProperty(LAYOUT_VARS[mode][part][i], String(Math.min(hi, Math.max(lo, n))));
+            });
+        });
+    });
+}
+try { applyLayoutControl(JSON.parse(localStorage.getItem(LAYOUT_CACHE_KEY) || 'null')); } catch (e) {}   // instant, no flash
+function listenToLayoutControl() {
+    onValue(ref(database, 'layoutControl'), (snap) => {
+        const v = snap.val();
+        if (!v) return;
+        applyLayoutControl(v);
+        try { localStorage.setItem(LAYOUT_CACHE_KEY, JSON.stringify(v)); } catch (e) {}
+    }, (err) => console.warn('Layout Control read skipped:', err && err.code));
+}
+
 function listenToFirebaseData() {
-    const mangaRef = ref(database, 'manga_list');
-    onValue(mangaRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-            let formattedList = Object.keys(data).map(key => {
-                const item = data[key] || {};
+    const onNode = (node) => {
+        onValue(ref(database, node), (snapshot) => {
+            rawNodes[node] = snapshot.val();
+            nodeLoaded[node] = true;
+            rebuildMangaData();
+        }, (error) => {
+            console.warn('Firebase Read Warning/Fallback (' + node + '):', error);
+            rawNodes[node] = null;
+            nodeLoaded[node] = true;
+            rebuildMangaData();
+        });
+    };
+    onNode(MAIN_NODE);
+    onNode(ADULT_NODE);
+}
+
+function rebuildMangaData() {
+    {
+        const entries = [];
+        [MAIN_NODE, ADULT_NODE].forEach(node => {
+            const d = rawNodes[node];
+            if (d && typeof d === 'object') Object.keys(d).forEach(k => entries.push({ key: k, node, item: d[k] || {} }));
+        });
+        if (entries.length) {
+            let formattedList = entries.map(({ key, node, item }) => {
                 let chaptersArr = [];
                 if (item.chapters) {
                     chaptersArr = Object.keys(item.chapters).map(cKey => {
@@ -176,6 +248,8 @@ function listenToFirebaseData() {
                     latestChapterTitle: latestCh ? latestCh.title : '',
                     description: item.description || 'Cinematic Manga Experience desu~',
                     genre: item.genre || 'Action, Fantasy',
+                    adult: node === ADULT_NODE || item.adult === true || item.adult === 'true' || item.adult === 1 || item.adult === '1',
+                    node: node,
                     chapters: chaptersArr
                 };
             });
@@ -189,21 +263,32 @@ function listenToFirebaseData() {
             }
             currentMangaData = formattedList;
             safeSet(SHARED_STORAGE_KEY, formattedList);
-        } else {
+        } else if (nodeLoaded[MAIN_NODE] && nodeLoaded[ADULT_NODE]) {
+            // both nodes answered and are empty / unreadable: use the saved copy
             currentMangaData = cleanList(safeGet(SHARED_STORAGE_KEY, []));
+        } else {
+            return;     // still waiting for the other node
         }
         refreshCurrentView();
         populateFilterGenres();
-    }, (error) => {
-        console.warn("Firebase Read Warning/Fallback:", error);
-        currentMangaData = cleanList(safeGet(SHARED_STORAGE_KEY, []));
-        refreshCurrentView();
-        populateFilterGenres();
-    });
+    }
 }
 
-function loadSharedMangas() {
+// Every manga (used to look up one manga by id: detail page, reader, history, downloads)
+function loadAllMangas() {
     return currentMangaData.length > 0 ? currentMangaData : cleanList(safeGet(SHARED_STORAGE_KEY, []));
+}
+
+// Adult content = every manga that lives in the Firebase node  adult_list  (set as m.adult when the list is built)
+function isAdultManga(m) {
+    return !!(m && m.adult === true);
+}
+
+// Lists shown to the person (home, genres, latest, search, filter):
+//   Adult Content OFF -> normal manga only      Adult Content ON -> adult manga only
+function loadSharedMangas() {
+    const on = !!userSettings.adult;
+    return loadAllMangas().filter(m => isAdultManga(m) === on);
 }
 
 function refreshCurrentView() {
@@ -241,6 +326,9 @@ window.setReleaseFilter = function(type) {
     document.getElementById('filterRelOld').className = type === 'old' ? "setting-btn-active py-2.5 px-2 rounded-xl border transition text-center text-xs" : "setting-btn-inactive py-2.5 px-2 rounded-xl border transition text-center text-xs";
 };
 
+// Same list as the Adult (18+) group in the Uploader
+const ADULT_GENRES = ['Adult', 'Mature', 'Smut', 'Erotica', 'Uncensored', 'Yaoi', 'Yuri', 'NTR', 'Netorare', 'Cheating', 'Vanilla', 'Femdom', 'BDSM', 'Milf', 'Office Romance', 'Forbidden Love', 'Revenge', 'Dark', 'Full Color'];
+
 function populateFilterGenres() {
     const container = document.getElementById('filterGenresList');
     if (!container) return;
@@ -252,12 +340,16 @@ function populateFilterGenres() {
         'Horror', 'Slice of Life', 'Martial Arts', 'Seinen', 'Shonen'
     ];
     
-    const genresSet = new Set(defaultGenres);
+    // Adult genres only exist while Adult Content is ON (they never show when it is off)
+    const adultLower = new Set(ADULT_GENRES.map(g => g.toLowerCase()));
+    const genresSet = new Set(userSettings.adult ? ADULT_GENRES.concat(defaultGenres) : defaultGenres);
     mangas.forEach(m => {
         if (m.genre) {
             m.genre.split(',').forEach(g => {
                 const clean = g.trim();
-                if (clean) genresSet.add(clean);
+                if (!clean) return;
+                if (!userSettings.adult && adultLower.has(clean.toLowerCase())) return;
+                genresSet.add(clean);
             });
         }
     });
@@ -312,7 +404,8 @@ async function incrementMangaViewCount(mangaId) {
     holdOrderUntil = Date.now() + 3000;
     try {
         // Atomic server-side +1 (no read-then-write race)
-        await update(ref(database, `manga_list/${mangaId}`), { views: increment(1) });
+        const vm = loadAllMangas().find(x => x.id === mangaId);
+        await update(ref(database, `${vm && vm.node === ADULT_NODE ? ADULT_NODE : MAIN_NODE}/${mangaId}`), { views: increment(1) });
     } catch (err) {
         console.warn("Failed to increment view count:", err);
     }
@@ -598,7 +691,9 @@ function renderLatestHero() {
     // Rebuild only when something visible changed (view counts etc. must not restart the carousel)
     const key = list.map(m => [m.id, m.updatedAt || 0, m.createdAt || 0, m.lastChapterAt || 0, m.latestChapterTitle || '', m.image].join('~')).join('|');
     if (key === latestHeroKey && (wrap.children.length || !list.length)) return;
+    const wasBuilt = wrap.children.length > 0 && !wrap.querySelector('.lh-empty');
     latestHeroKey = key;
+    if (wasBuilt) wrap.classList.add('lh-nofx');       // data refresh only: rebuild silently, no fade-in / shine replay (this was the flicker)
 
     wrap.innerHTML = '';
     dotsBox.innerHTML = '';
@@ -681,6 +776,7 @@ function renderLatestHero() {
     glider.setAttribute('aria-hidden', 'true');
     dotsBox.appendChild(glider);
     bindLatestHeroDrag(wrap);
+    if (wasBuilt) { void wrap.offsetWidth; requestAnimationFrame(() => wrap.classList.remove('lh-nofx')); }
     startLatestHeroTimer();
 }
 
@@ -1007,7 +1103,7 @@ function renderChapterList(mangaId) {
     if (!container) return;
     container.innerHTML = '';
 
-    const foundManga = loadSharedMangas().find(m => m.id === mangaId);
+    const foundManga = loadAllMangas().find(m => m.id === mangaId);
     const baseChapters = (foundManga && foundManga.chapters && foundManga.chapters.length > 0) ? foundManga.chapters : [
         { id: 'ch-3', title: 'Chapter 3 (Preview)', date: '2026-06-01', pages: [] },
         { id: 'ch-2', title: 'Chapter 2 (Preview)', date: '2026-05-15', pages: [] },
@@ -1099,7 +1195,7 @@ function renderChapterList(mangaId) {
 
 window.readFirstChapter = function() {
     const mangaId = currentDetailId();
-    const found = loadSharedMangas().find(m => m.id === mangaId);
+    const found = loadAllMangas().find(m => m.id === mangaId);
 
     if (found && found.chapters && found.chapters.length > 0) {
         // chapters are sorted newest-first, so the last one is Chapter 1
@@ -1220,7 +1316,7 @@ function restoreViewFromHash() {
 
     let title = '';
     if (viewName === 'detail') {
-        const found = loadSharedMangas().find(m => m.id === id);
+        const found = loadAllMangas().find(m => m.id === id);
         title = found ? found.title : 'Manga Detail';
     }
     // renderView() fills the detail page / reader itself
@@ -1542,7 +1638,7 @@ function renderReaderContentInner(readerParam, startIndex = 0, offlineUrls = nul
     container.innerHTML = '';
 
     const [mangaId, chapterId] = readerParam.includes('___') ? readerParam.split('___') : [null, readerParam];
-    const foundManga = mangaId ? loadSharedMangas().find(m => m.id === mangaId) : null;
+    const foundManga = mangaId ? loadAllMangas().find(m => m.id === mangaId) : null;
     const foundCh = (foundManga && foundManga.chapters) ? foundManga.chapters.find(c => c.id === chapterId) : null;
 
     const floatingTitle = document.getElementById('readerFloatingTitle');
@@ -1735,7 +1831,7 @@ function renderView(state, isRestore = false) {
         const go = () => document.startViewTransition(() => applyView(state, 'none'));
         // Chapter Lobby: make sure its cover is already decoded, otherwise the new snapshot is taken
         // while the cover is still empty (black flash / half a cover).
-        const target = state.view === 'detail' ? loadSharedMangas().find(m => m.id === state.id) : null;
+        const target = state.view === 'detail' ? loadAllMangas().find(m => m.id === state.id) : null;
         if (target && target.image) {
             const img = new Image();
             img.src = target.image;
@@ -1781,7 +1877,7 @@ function applyView(state, mode) {
     if (state.view === 'detail') {
         targetId = 'detailView';
         shownDetailId = state.id;
-        const found = loadSharedMangas().find(m => m.id === state.id);
+        const found = loadAllMangas().find(m => m.id === state.id);
         if (found) fillDetail(found);
     }
     if (state.view === 'reader') {
@@ -1937,7 +2033,7 @@ function renderSearchBody(forceAnimate) {
 let searchOpening = false;
 function openSearchResult(id) {
     if (searchOpening || searchDusting) return;
-    const m = loadSharedMangas().find(x => x.id === id) || getRecentSearches().find(x => x.id === id);
+    const m = loadAllMangas().find(x => x.id === id) || getRecentSearches().find(x => x.id === id);
     if (!m) return;
     saveRecentSearch(m);
     searchOpening = true;
@@ -2327,7 +2423,11 @@ const THEMES = [
     { id: 'violet', name: 'Violet',      a: '#b7a4ff', b: '#7c5ce8', bg: '#0a0814' },
     { id: 'amber',  name: 'Amber',       a: '#ffcf78', b: '#f58e14', bg: '#100b06' },
     { id: 'aurora', name: 'Aurora',      a: '#5fe0c2', b: '#7c5ce8', bg: '#070a14', tag: 'Blend' },
-    { id: 'sunset', name: 'Sunset',      a: '#ffbe6e', b: '#e83e70', bg: '#100810', tag: 'Blend' }
+    { id: 'sunset', name: 'Sunset',      a: '#ffbe6e', b: '#e83e70', bg: '#100810', tag: 'Blend' },
+    { id: 'smoke',    name: 'Smoke',       a: '#ffffff', b: '#808694', bg: '#16181d', tag: 'Blend' },
+    { id: 'goldgrey', name: 'Gold Grey',   a: '#f0d482', b: '#80848e', bg: '#111114', tag: 'Blend' },
+    { id: 'white',    name: 'White',       a: '#ffffff', b: '#475569', bg: '#ffffff' },
+    { id: 'black',    name: 'Black',       a: '#d4d4d4', b: '#737373', bg: '#000000' }
 ];
 // current palette as [r,g,b] arrays, read from the CSS variables (used by the canvas scenes)
 const THEME_RGB = {};
@@ -2868,6 +2968,7 @@ window.addEventListener('DOMContentLoaded', () => {
     renderLatestHero();
     initSakuraPetals();
     listenToFirebaseData();
+    listenToLayoutControl();
     restoreViewFromHash();
     
     window.addEventListener('storage', (e) => {
@@ -2909,7 +3010,7 @@ let libMode = '';
 function libRender() {
     const list = document.getElementById('libList');
     if (!list) return;
-    const all = loadSharedMangas();
+    const all = loadAllMangas().filter(m => userSettings.adult || !isAdultManga(m));
     list.innerHTML = '';
 
     const empty = (icon, text) => {
@@ -3014,7 +3115,7 @@ function renderHistoryPage() {
     buildHistoryEmbers();
     dmRender();
     const last = safeGet(LAST_READ_KEY, null);
-    const manga = last && loadSharedMangas().find(x => x.id === last.m);
+    const manga = last && loadAllMangas().find(x => x.id === last.m);
     const thumb = document.getElementById('hxThumb');
     const chap = document.getElementById('hxChap');
     if (!manga) {
@@ -3197,7 +3298,7 @@ function dlExt(type, url) {
 async function startDownload(mangaId, chapterId, opts = {}) {
     const id = mangaId + '___' + chapterId;
     if (dlRuntime.has(id)) return;
-    const manga = loadSharedMangas().find(m => m.id === mangaId);
+    const manga = loadAllMangas().find(m => m.id === mangaId);
     const ch = manga && (manga.chapters || []).find(c => c.id === chapterId);
     if (!manga || !ch) return;
     const urls = (ch.pages || []).map(p => p && p.data).filter(Boolean);
@@ -3310,7 +3411,7 @@ function dmRender() {
         if (e.status === 'done') {
             el.classList.add('readable');
             el.onclick = () => {
-                const m = loadSharedMangas().find(x => x.id === e.m);
+                const m = loadAllMangas().find(x => x.id === e.m);
                 if (!m || !(m.chapters || []).some(c => c.id === e.c)) { showToast('Chapter data not available yet', 'err'); return; }
                 navigateToReaderView(e.m, e.c, e.ct);   // reader picks the offline copy automatically
             };
@@ -3469,6 +3570,31 @@ async function syncWakeLock() {
 document.addEventListener('visibilitychange', syncWakeLock);
 
 // ---- switches ----
+// ---- premium 18+ confirm box (returns a Promise: true = confirmed, false = cancelled) ----
+function adultConfirm() {
+    return new Promise(resolve => {
+        const box = document.getElementById('adultGate');
+        if (!box) { resolve(window.confirm('Are you 18 years or older?')); return; }
+        const okBtn = document.getElementById('adultGateOk');
+        const noBtn = document.getElementById('adultGateCancel');
+        let done = false;
+        const finish = (v) => {
+            if (done) return; done = true;
+            box.classList.remove('show'); box.setAttribute('aria-hidden', 'true');
+            document.removeEventListener('keydown', onKey);
+            setTimeout(() => { box.hidden = true; }, 260);
+            resolve(v);
+        };
+        const onKey = (e) => { if (e.key === 'Escape') finish(false); };
+        okBtn.onclick = () => finish(true);
+        noBtn.onclick = () => finish(false);
+        box.querySelector('.adult-gate-bd').onclick = () => finish(false);
+        document.addEventListener('keydown', onKey);
+        box.hidden = false; box.setAttribute('aria-hidden', 'false');
+        requestAnimationFrame(() => { box.classList.add('show'); noBtn.focus(); });
+    });
+}
+
 function stSyncSwitches() {
     document.querySelectorAll('.st-switch[data-set]').forEach(b => {
         const on = !!userSettings[b.dataset.set];
@@ -3481,8 +3607,22 @@ async function stSetOption(name, value) {
     if (name === 'keepAwake' && value && !('wakeLock' in navigator)) {
         showToast('Keep Screen On is not supported in this browser', 'err'); return false;
     }
+    if (name === 'adult' && value && !(await adultConfirm())) return false;
     userSettings[name] = value;
     saveUserSettings();
+    if (name === 'adult') {
+        selectedGenres = [];                   // genres of the other mode would hide everything
+        applyAdultArt();
+        latestHeroKey = '';
+        refreshCurrentView();
+        populateFilterGenres();
+        if (typeof renderGenresView === 'function') renderGenresView();
+        showToast(value ? 'Adult Content on - showing 18+ manga only' : 'Adult Content off', 'ok');
+    }
+    if (name === 'jelly') {
+        document.documentElement.classList.toggle('jelly-off', !value);
+        showToast(value ? 'Jelly Touch on' : 'Jelly Touch off', 'ok');
+    }
     if (name === 'battery') {
         document.documentElement.classList.toggle('battery-saver', value);
         startLatestHeroTimer();                      // autoplay stops / resumes
