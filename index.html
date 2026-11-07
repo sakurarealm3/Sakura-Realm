@@ -62,6 +62,80 @@
     </script>
 </head>
 <body class="flex flex-col min-h-screen relative overflow-x-hidden w-full m-0 p-0">
+    <!-- INTRO SCREEN -->
+    <div id="introScreen" class="intro" role="status" aria-label="Loading Sakura Realm">
+        <div class="in-bg"></div>
+        <div class="in-petals" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="in-stagebox" aria-hidden="true">
+            <div class="in-screen">
+                <video class="in-video" src="intro-hd.mp4" poster="intro-poster-hd.jpg" autoplay muted loop playsinline preload="auto" disablepictureinpicture tabindex="-1"></video>
+                <span class="in-gloss"></span><span class="in-mist"></span><span class="in-veil"></span>
+            </div>
+        </div>
+        <div class="in-grain"></div><div class="in-vig"></div>
+        <div class="in-brand">
+            <div class="in-logo" aria-hidden="true">
+                <div class="in-logo-box">
+                    <svg viewBox="0 0 100 100"><defs><linearGradient id="inG" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ffffff"/><stop offset="60%" stop-color="#b6efe6"/><stop offset="100%" stop-color="#5fc4b6"/></linearGradient></defs>
+                    <g transform="translate(50,50)"><path d="M 0,-10 C -12,-35 0,-45 0,-45 C 0,-45 12,-35 0,-10 Z" fill="url(#inG)" transform="rotate(0)"/><path d="M 0,-10 C -12,-35 0,-45 0,-45 C 0,-45 12,-35 0,-10 Z" fill="url(#inG)" transform="rotate(72)"/><path d="M 0,-10 C -12,-35 0,-45 0,-45 C 0,-45 12,-35 0,-10 Z" fill="url(#inG)" transform="rotate(144)"/><path d="M 0,-10 C -12,-35 0,-45 0,-45 C 0,-45 12,-35 0,-10 Z" fill="url(#inG)" transform="rotate(216)"/><path d="M 0,-10 C -12,-35 0,-45 0,-45 C 0,-45 12,-35 0,-10 Z" fill="url(#inG)" transform="rotate(288)"/><circle r="6" fill="#fff"/><circle r="3" fill="#2a8f84"/></g></svg>
+                </div>
+            </div>
+            <div class="in-title brand-lock" data-no-i18n>
+                <span class="in-t1">Sakura Realm</span>
+                <span class="in-t2">Manga World</span>
+            </div>
+        </div>
+        <div class="in-bar-wrap">
+            <div class="in-meta"><span>Loading</span><span class="in-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
+            <div class="in-bar"><div class="in-fill" id="introFill"></div></div>
+        </div>
+    </div>
+    <script>
+    (function () {
+        var el = document.getElementById('introScreen'); if (!el) return;
+        var fill = document.getElementById('introFill'), pct = document.getElementById('introPct');
+        var root = document.documentElement; root.classList.add('intro-lock');
+        var t0 = Date.now(), MIN = 3600, loaded = false, done = false, shown = 0;
+        // Show the video only once real frames are being presented (avoids the first-second stutter)
+        var vid = el.querySelector('.in-video');
+        function vidReady() { el.classList.add('vid-ready'); }
+        if (vid) {
+            var fr = 0;
+            try { var pp = vid.play && vid.play(); if (pp && pp.catch) pp.catch(function () {}); } catch (e) {}
+            if (vid.requestVideoFrameCallback) {
+                var onFr = function () { if (++fr >= 4) vidReady(); else vid.requestVideoFrameCallback(onFr); };
+                vid.requestVideoFrameCallback(onFr);
+            } else { vid.addEventListener('playing', vidReady, { once: true }); }
+            setTimeout(vidReady, 1800);
+        } else { vidReady(); }
+        function finish() {
+            if (done) return; done = true;
+            el.classList.add('out'); root.classList.remove('intro-lock');
+            setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 1100);
+        }
+        var START = 650, last = 0;                       // the bar fades in at ~0.65s: begin filling at that moment (no jump)
+        function tick(now) {
+            if (done) return;
+            var t = Date.now() - t0;
+            var dt = last ? Math.min(64, now - last) : 16; last = now;
+            var x = Math.max(0, Math.min(1, (t - START) / (MIN - START)));
+            var e = 1 - Math.pow(1 - x, 1.6);                // gentle ease-out, no sudden start
+            var target = Math.min(loaded ? 100 : 90, e * (loaded ? 100 : 90));
+            if (t >= MIN && loaded) target = 100;
+            shown += (target - shown) * (1 - Math.exp(-dt / 140));   // same smoothness at 30 / 60 / 120 fps
+            if (target - shown < 0.25) shown = target;
+            fill.style.width = shown.toFixed(2) + '%'; if (pct) pct.textContent = Math.round(shown);
+            if (shown >= 100) { setTimeout(finish, 350); return; }
+            requestAnimationFrame(tick);
+        }
+        if (document.readyState === 'complete') loaded = true; else window.addEventListener('load', function () { loaded = true; });
+        setTimeout(function () { loaded = true; }, 5000);       // never wait forever
+        setTimeout(finish, 9000);                              // safety
+        el.addEventListener('click', function () { if (Date.now() - t0 > 1200) { loaded = true; finish(); } });
+        requestAnimationFrame(tick);
+    })();
+    </script>
+
     <!-- Falling Sakura Petals Background Canvas -->
     <canvas id="sakuraCanvas"></canvas>
     
@@ -298,7 +372,6 @@
                     <div class="wh-groove-line" aria-hidden="true"></div>
                     <div class="wh-groove-line2" aria-hidden="true"></div>
                     <div class="wh-right">
-                        <div class="wh-watermark" aria-hidden="true">UPDATE</div>
                         <div class="lh-stage"><div id="latestHeroSlides" class="lh-slides"></div></div>
                         <div id="latestHeroDots" class="lh-dots"></div>
                     </div>
@@ -499,8 +572,18 @@
                     </div>
                     <div class="st-row">
                         <span class="st-row-ico"><i class="fa-solid fa-leaf"></i></span>
-                        <span class="st-row-txt"><b>Battery Saver</b><small>Fewer animations, less battery use</small></span>
-                        <button type="button" class="st-switch" role="switch" aria-checked="false" aria-label="Battery Saver" data-set="battery"><i></i></button>
+                        <span class="st-row-txt"><b>Battery Saving</b><small>Fewer animations, less battery use</small></span>
+                        <button type="button" class="st-switch" role="switch" aria-checked="false" aria-label="Battery Saving" data-set="battery"><i></i></button>
+                    </div>
+                    <div class="st-row">
+                        <span class="st-row-ico"><i class="fa-solid fa-hand-pointer"></i></span>
+                        <span class="st-row-txt"><b>Jelly Touch</b><small>Home and History pictures wobble like jelly when touched</small></span>
+                        <button type="button" class="st-switch" role="switch" aria-checked="true" aria-label="Jelly Touch" data-set="jelly"><i></i></button>
+                    </div>
+                    <div class="st-row">
+                        <span class="st-row-ico"><i class="fa-solid fa-circle-exclamation"></i></span>
+                        <span class="st-row-txt"><b>Adult Content (18+)</b><small>Show adult manga only and hide the normal manga</small></span>
+                        <button type="button" class="st-switch" role="switch" aria-checked="false" aria-label="Adult Content" data-set="adult"><i></i></button>
                     </div>
                 </div>
 
@@ -543,6 +626,21 @@
         <button type="button" id="dockFab" class="dock-fab" onclick="toggleDock()" aria-label="Quick menu" aria-expanded="false">
             <i class="fa-solid fa-gear"></i>
         </button>
+    </div>
+
+    <!-- 18+ confirm (Adult Content switch) -->
+    <div id="adultGate" class="adult-gate" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="adultGateTitle">
+        <div class="adult-gate-bd"></div>
+        <div class="adult-gate-card">
+            <div class="adult-gate-badge" aria-hidden="true"><span>18+</span></div>
+            <h3 id="adultGateTitle" class="adult-gate-title">Adult Content</h3>
+            <p class="adult-gate-text">This section contains mature manga made for adults only. Only adult manga will be shown and the normal manga will be hidden.</p>
+            <p class="adult-gate-ask">Are you 18 years or older?</p>
+            <div class="adult-gate-actions">
+                <button type="button" id="adultGateCancel" class="adult-gate-btn ghost">Cancel</button>
+                <button type="button" id="adultGateOk" class="adult-gate-btn primary">I am 18 or older</button>
+            </div>
+        </div>
     </div>
 
     <!-- Confirm dialog (Settings) -->
@@ -589,5 +687,6 @@
     <script src="lang-my.js"></script>
     <script src="i18n.js"></script>
     <script type="module" src="script.js"></script>
+    <script src="jelly.js" defer></script>
 </body>
 </html>
