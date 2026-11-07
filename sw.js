@@ -1,6 +1,6 @@
 /* Sakura Realm - offline app shell.
    Page images are NOT cached here (downloaded chapters live in IndexedDB), so this uses almost no storage / bandwidth. */
-const CACHE = 'sakura-shell-v17';
+const CACHE = 'sakura-shell-v21';
 const SHELL = ['./', 'index.html', 'style.css', 'script.js', 'i18n.js', 'lang-my.js'];
 const CDN = /(^|\.)(gstatic\.com|googleapis\.com|cdnjs\.cloudflare\.com|cdn\.tailwindcss\.com|jsdelivr\.net)$/;
 
