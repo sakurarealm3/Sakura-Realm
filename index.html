@@ -60,6 +60,40 @@
             }
         }
     </script>
+    <script>
+    /* Intro plays once per browser-tab session. Refresh (or reopening a #detail/#reader link) skips it. */
+    (function () {
+        try {
+            if (sessionStorage.getItem('sakura_intro_seen') === '1') document.documentElement.classList.add('intro-skip');
+        } catch (e) {}
+    })();
+    </script>
+    <script>
+    /* Refresh on a #detail / #reader / #genres ... link: Home is the default markup, so it flashed for a moment
+       before script.js swapped to the right page. Keep Home + header hidden until the router has picked the view. */
+    (function () {
+        var h = (location.hash || '').replace('#', '');
+        if (h && h !== 'home') {
+            var r = document.documentElement;
+            r.classList.add('boot-deep');
+            setTimeout(function () { r.classList.remove('boot-deep'); }, 4000);   // safety: never stay hidden
+        }
+    })();
+    </script>
+    <script>
+    /* Adult Content mode: apply the class before the first paint, otherwise the normal-side Home shows for a moment on refresh. */
+    (function () {
+        try {
+            var u = JSON.parse(localStorage.getItem('sakura_user_settings_v1') || 'null');
+            if (u && u.adult) document.documentElement.classList.add('adult-mode');
+        } catch (e) {}
+    })();
+    </script>
+    <style>
+        html.intro-skip #introScreen { display: none !important; }
+        html.boot-deep #homeView, html.boot-deep #mainHeaderBar, html.boot-deep #sakuraCanvas { display: none !important; }
+        html.boot-deep body { background: #040b0b; }
+    </style>
 </head>
 <body class="flex flex-col min-h-screen relative overflow-x-hidden w-full m-0 p-0">
     <!-- INTRO SCREEN -->
@@ -93,6 +127,8 @@
     <script>
     (function () {
         var el = document.getElementById('introScreen'); if (!el) return;
+        if (document.documentElement.classList.contains('intro-skip')) { if (el.parentNode) el.parentNode.removeChild(el); return; }
+        try { sessionStorage.setItem('sakura_intro_seen', '1'); } catch (e) {}
         var fill = document.getElementById('introFill'), pct = document.getElementById('introPct');
         var root = document.documentElement; root.classList.add('intro-lock');
         var t0 = Date.now(), MIN = 3600, loaded = false, done = false, shown = 0;
@@ -501,7 +537,7 @@
                         <span id="hxName" class="hx-name">Nothing read yet</span>
                         <span id="hxChap" class="hx-chap" hidden><i class="fa-solid fa-book-open"></i><span id="hxChapText"></span></span>
                     </div>
-                    <img class="hx-makima" src="makima.webp" alt="" draggable="false">
+                    <img class="hx-makima" src="makima.webp" alt="" draggable="false"><script>(function(){if(document.documentElement.classList.contains('adult-mode')){var i=document.currentScript.previousElementSibling;if(i)i.setAttribute('src','adult-history.webp');}})();</script>
                 </div>
 
                 <div class="hx-slight" aria-hidden="true"><i></i></div>
