@@ -14,8 +14,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sakura Realm - Main Web & Chapter Lobby</title>
          
-    <!-- Tailwind CSS CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tailwind: pre-built tailwind.css (fast). If it is missing, the old CDN is loaded as a safe fallback. -->
     <link rel="stylesheet" href="style.css">
          
     <!-- FontAwesome Icons CDN -->
@@ -27,38 +26,47 @@
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;800;900&family=Inter:wght@500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Noto+Sans+Myanmar:wght@400;500;600;700;800&display=swap" rel="stylesheet">
          
     <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        dark: {
-                            base: 'rgba(var(--bgb), <alpha-value>)',
-                            surface: 'rgba(var(--bgs), <alpha-value>)',
-                            card: 'rgba(var(--bgc), <alpha-value>)',
-                            border: 'rgba(255, 255, 255, 0.1)'
-                        },
-                        sakura: {
-                            50: 'rgba(var(--c50), <alpha-value>)',
-                            100: 'rgba(var(--c100), <alpha-value>)',
-                            300: 'rgba(var(--c300), <alpha-value>)',
-                            400: 'rgba(var(--c400), <alpha-value>)',
-                            500: 'rgba(var(--c500), <alpha-value>)',
-                            600: 'rgba(var(--c600), <alpha-value>)',
-                            900: 'rgba(var(--c900), <alpha-value>)'
+        /* Fallback only: used when tailwind.css is not found (before the first build). */
+        window.__twFallback = function () {
+            if (window.__twF) return; window.__twF = 1;
+            var s = document.createElement('script');
+            s.src = 'https://cdn.tailwindcss.com';
+            s.onload = function () {
+                tailwind.config = {
+                    darkMode: 'class',
+                    theme: {
+                        extend: {
+                            colors: {
+                                dark: {
+                                    base: 'rgba(var(--bgb), <alpha-value>)',
+                                    surface: 'rgba(var(--bgs), <alpha-value>)',
+                                    card: 'rgba(var(--bgc), <alpha-value>)',
+                                    border: 'rgba(255, 255, 255, 0.1)'
+                                },
+                                sakura: {
+                                    50: 'rgba(var(--c50), <alpha-value>)',
+                                    100: 'rgba(var(--c100), <alpha-value>)',
+                                    300: 'rgba(var(--c300), <alpha-value>)',
+                                    400: 'rgba(var(--c400), <alpha-value>)',
+                                    500: 'rgba(var(--c500), <alpha-value>)',
+                                    600: 'rgba(var(--c600), <alpha-value>)',
+                                    900: 'rgba(var(--c900), <alpha-value>)'
+                                }
+                            },
+                            fontFamily: {
+                                sans: ['Plus Jakarta Sans', 'sans-serif'],
+                                serif: ['Cinzel', 'serif']
+                            },
+                            boxShadow: {
+                                'sakura-glow': '0 0 15px rgba(var(--c500), 0.25)',
+                                'sakura-sm': '0 0 6px rgba(var(--c500), 0.15)'
+                            }
                         }
-                    },
-                    fontFamily: {
-                        sans: ['Plus Jakarta Sans', 'sans-serif'],
-                        serif: ['Cinzel', 'serif']
-                    },
-                    boxShadow: {
-                        'sakura-glow': '0 0 15px rgba(var(--c500), 0.25)',
-                        'sakura-sm': '0 0 6px rgba(var(--c500), 0.15)'
                     }
-                }
-            }
-        }
+                };
+            };
+            document.head.appendChild(s);
+        };
     </script>
     <script>
     /* Intro plays once per browser-tab session. Refresh (or reopening a #detail/#reader link) skips it. */
@@ -94,6 +102,7 @@
         html.boot-deep #homeView, html.boot-deep #mainHeaderBar, html.boot-deep #sakuraCanvas { display: none !important; }
         html.boot-deep body { background: #040b0b; }
     </style>
+    <link rel="stylesheet" href="tailwind.css" onerror="window.__twFallback()">
 </head>
 <body class="flex flex-col min-h-screen relative overflow-x-hidden w-full m-0 p-0">
     <!-- INTRO SCREEN -->
