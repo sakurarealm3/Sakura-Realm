@@ -367,6 +367,58 @@
                 </button>
             </div>
             <nav class="flex flex-col gap-3 font-semibold text-sm text-slate-200"></nav>   <!-- Home Lobby / Browse Genres / Latest Updates boxes removed -->
+            <!-- USER ACCOUNT (Firebase B) -->
+            <div id="sidebarAccount" class="ac-wrap">
+                <!-- LOGIN -->
+                <div id="acLoginView" class="ac-card">
+                    <div class="ac-head">
+                        <div class="ac-medal"><i class="fa-solid fa-user-lock"></i></div>
+                        <h3 class="ac-title">Account Login</h3>
+                        <p class="ac-sub">Sign in to unlock premium chapters</p>
+                    </div>
+                    <form id="acLoginForm" class="ac-form" novalidate>
+                        <label class="ac-field">
+                            <i class="fa-solid fa-envelope ac-field-ico"></i>
+                            <input id="acEmail" type="email" inputmode="email" placeholder="Gmail" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="next">
+                        </label>
+                        <label class="ac-field">
+                            <i class="fa-solid fa-lock ac-field-ico"></i>
+                            <input id="acPass" type="password" placeholder="Password" autocomplete="current-password" enterkeyhint="go">
+                            <button type="button" id="acEye" class="ac-eye" aria-label="Show password"><i class="fa-regular fa-eye"></i></button>
+                        </label>
+                        <p id="acErr" class="ac-err" role="alert"></p>
+                        <button id="acBtn" type="submit" class="ac-btn"><i class="fa-solid fa-right-to-bracket"></i><span>Login</span></button>
+                    </form>
+                    <p class="ac-note"><i class="fa-solid fa-shield-halved"></i><span>Accounts are issued by the admin</span></p>
+                </div>
+
+                <!-- LOGGED IN -->
+                <div id="acProfileView" class="ac-card hidden">
+                    <div class="ac-top">
+                        <div class="ac-ring"><div id="acAvatar" class="ac-avatar">?</div></div>
+                        <div class="ac-who">
+                            <div id="acName" class="ac-name"></div>
+                            <div class="ac-mail"><i class="fa-solid fa-envelope"></i><span id="acMail"></span></div>
+                        </div>
+                    </div>
+                    <div id="acPlanRow" class="ac-plan" style="display:none">
+                        <div class="ac-plan-ico"><i class="fa-solid fa-crown"></i></div>
+                        <div class="ac-plan-body">
+                            <div class="ac-plan-label">Member Plan</div>
+                            <div id="acPlanName" class="ac-plan-name"></div>
+                        </div>
+                        <div class="ac-plan-foot">
+                            <span class="ac-plan-state"><i class="ac-plan-dot"></i><b id="acPlanState">Active</b></span>
+                            <div id="acPlanDate" class="ac-plan-date"></div>
+                        </div>
+                    </div>
+                    <div id="acCoinsRow" class="ac-coins" style="display:none">
+                        <div class="ac-coins-ico"><i class="fa-solid fa-coins"></i></div>
+                        <div class="ac-coins-body"><span class="ac-coins-label">Your Coins</span><b id="acCoins">0</b></div>
+                    </div>
+                    <button id="acLogout" type="button" class="ac-logout"><i class="fa-solid fa-right-from-bracket"></i><span>Logout</span></button>
+                </div>
+            </div>
         </div>
         <div class="sidebar-welcome border-t border-sakura-500/20 pt-4 relative z-10">
             Welcome To Sakura Realm
