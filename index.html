@@ -24,7 +24,7 @@
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;800;900&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Noto+Sans+Myanmar:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;800;900&family=Inter:wght@500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Noto+Sans+Myanmar:wght@400;500;600;700;800&display=swap" rel="stylesheet">
          
     <script>
         tailwind.config = {
@@ -374,7 +374,6 @@
                     <div class="ac-head">
                         <div class="ac-medal"><i class="fa-solid fa-user-lock"></i></div>
                         <h3 class="ac-title">Account Login</h3>
-                        <p class="ac-sub">Sign in to unlock premium chapters</p>
                     </div>
                     <form id="acLoginForm" class="ac-form" novalidate>
                         <label class="ac-field">
@@ -386,10 +385,14 @@
                             <input id="acPass" type="password" placeholder="Password" autocomplete="current-password" enterkeyhint="go">
                             <button type="button" id="acEye" class="ac-eye" aria-label="Show password"><i class="fa-regular fa-eye"></i></button>
                         </label>
+                        <label class="ac-remember" for="acRemember">
+                            <input id="acRemember" type="checkbox" checked>
+                            <span class="ac-remember-box"><i class="fa-solid fa-check"></i></span>
+                            <span class="ac-remember-txt">Remember me</span>
+                        </label>
                         <p id="acErr" class="ac-err" role="alert"></p>
                         <button id="acBtn" type="submit" class="ac-btn"><i class="fa-solid fa-right-to-bracket"></i><span>Login</span></button>
                     </form>
-                    <p class="ac-note"><i class="fa-solid fa-shield-halved"></i><span>Accounts are issued by the admin</span></p>
                 </div>
 
                 <!-- LOGGED IN -->
