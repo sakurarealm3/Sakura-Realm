@@ -1,7 +1,7 @@
 // --- Firebase Config & SDK Imports ---
 import { initializeApp } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
 import { getDatabase, ref, onValue, update, increment, set, remove, get as dbGet } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-database.js";
-import { getAuth, signInWithEmailAndPassword, signOut as signOutB, onAuthStateChanged as onAuthB } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
+import { getAuth, signInWithEmailAndPassword, signOut as signOutB, onAuthStateChanged as onAuthB, setPersistence, browserLocalPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBAyTxN3YWVFzkmyAsd6SWF8f2YYpbc0T8",
@@ -35,7 +35,7 @@ window.sakuraUserAuth = authB;
 
 // --- Coins wallet: locked chapters cost coins; free chapters stay open to everyone ---
 const wallet = { uid: null, coins: null, unlocked: {}, plan: null, coinPath: null };
-// --- Paid member plan (Firebase B users/{uid}/plan = {type:'paid', months, expiresAt}); kept separate from the Coins plan ---
+// --- Paid member plan (Firebase B paidAccounts/{uid} = {days, startedAt}; old: {months, expiresAt}); kept separate from the Coins plan ---
 // Active  -> every chapter opens like a free one (no coin icons). Expired -> locked chapters show a "plan expired" warning.
 const memberPaid = () => !!(wallet.uid && wallet.plan && wallet.plan.type === 'paid');
 const memberActive = () => memberPaid() && Number(wallet.plan.expiresAt) > Date.now();
@@ -188,12 +188,34 @@ const acErr = (t) => { const e = acEl('acErr'); if (e) e.textContent = t || ''; 
 const acBusy = (b) => { const x = acEl('acBtn'); if (x) { x.disabled = b; x.innerHTML = b ? '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Signing in...</span>' : '<i class="fa-solid fa-right-to-bracket"></i><span>Login</span>'; } };
 acEl('acEye')?.addEventListener('click', () => { const i = acEl('acPass'), on = i.type === 'password'; i.type = on ? 'text' : 'password'; const b = acEl('acEye'); b.classList.toggle('on', on); b.innerHTML = '<i class="fa-regular ' + (on ? 'fa-eye-slash' : 'fa-eye') + '"></i>'; });
 
+// "Remember me": ON -> login stays on this device (Firebase local persistence, also the email is pre-filled next time).
+//                OFF -> login lasts only for this browser session; opening the site fresh asks for the login again.
+const AC_REMEMBER_KEY = 'sakura_user_remember_v1', AC_REMEMBER_EMAIL_KEY = 'sakura_user_remember_email_v1';
+const acLS = {
+    get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
+    del: (k) => { try { localStorage.removeItem(k); } catch (e) {} }
+};
+(function acInitRemember() {
+    const cb = acEl('acRemember'), em = acEl('acEmail');
+    if (!cb) return;
+    const saved = acLS.get(AC_REMEMBER_KEY);
+    cb.checked = saved === null ? true : saved === '1';          // first visit: ticked
+    if (cb.checked && em && !em.value) { const e = acLS.get(AC_REMEMBER_EMAIL_KEY); if (e) em.value = e; }
+})();
 acEl('acLoginForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     acErr(''); acBusy(true);
     clearTimeout(window.__acLoginTimer);
     window.__acLoginTimer = setTimeout(() => { acBusy(false); acErr('Network ပြဿနာ ရှိနေပါတယ်၊ ပြန်ကြိုးစားပါ'); }, 25000);
-    try { await signInWithEmailAndPassword(authB, acEl('acEmail').value.trim(), acEl('acPass').value); }
+    const email = acEl('acEmail').value.trim(), remember = !!acEl('acRemember')?.checked;
+    try {
+        // choose where Firebase keeps the login BEFORE signing in
+        try { await setPersistence(authB, remember ? browserLocalPersistence : browserSessionPersistence); } catch (pe) { console.warn('setPersistence skipped:', pe); }
+        await signInWithEmailAndPassword(authB, email, acEl('acPass').value);
+        if (remember) { acLS.set(AC_REMEMBER_KEY, '1'); acLS.set(AC_REMEMBER_EMAIL_KEY, email); }
+        else { acLS.set(AC_REMEMBER_KEY, '0'); acLS.del(AC_REMEMBER_EMAIL_KEY); }
+    }
     catch (err) { clearTimeout(window.__acLoginTimer); acBusy(false); acErr(err && err.code === 'auth/network-request-failed' ? 'Network ပြဿနာ ရှိနေပါတယ်၊ ပြန်ကြိုးစားပါ' : 'Email သို့မဟုတ် password မှားနေပါတယ်'); }
 });
 acEl('acLogout')?.addEventListener('click', () => signOutB(authB));
@@ -222,7 +244,20 @@ onAuthB(authB, async (user) => {
                 else if (rec.plan.type === 'paid') pa = rec.plan;
             }
             wallet.coins = ca ? (Number(ca.coins) || 0) : null;
-            wallet.plan = pa ? { type: 'paid', months: Number(pa.months) || 0, expiresAt: Number(pa.expiresAt) || 0 } : null;
+            // Uploader saves Paid as { days, startedAt } (days = days left, 1 month = 30 days); old accounts still have { months, expiresAt }
+            if (pa) {
+                let exp = 0, months = 0;
+                if (pa.days !== undefined && pa.days !== null) {
+                    const days = Math.max(0, Number(pa.days) || 0);
+                    const st = Number(pa.startedAt) || Number(rec.createdAt) || Date.now();
+                    exp = st + days * 86400000;
+                    months = Math.max(1, Math.ceil(days / 30));
+                } else {
+                    exp = Number(pa.expiresAt) || 0;
+                    months = Number(pa.months) || 0;
+                }
+                wallet.plan = { type: 'paid', months, expiresAt: exp };
+            } else wallet.plan = null;
             try { wallet.unlocked = (await bGet('unlocked/' + user.uid)) || {}; } catch (e) { wallet.unlocked = {}; }
             acRenderCoins(); refreshLocks();
             acBusy(false); acShow(true);
