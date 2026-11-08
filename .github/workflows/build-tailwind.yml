@@ -1,0 +1,33 @@
+name: Build Tailwind CSS
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'index.html'
+      - '*.js'
+      - 'tailwind.config.js'
+      - 'tailwind-input.css'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build tailwind.css
+        run: npx --yes tailwindcss@3.4.17 -c tailwind.config.js -i tailwind-input.css -o tailwind.css --minify
+
+      - name: Commit tailwind.css
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add tailwind.css
+          git diff --cached --quiet || (git commit -m "Build tailwind.css [skip ci]" && git push)
