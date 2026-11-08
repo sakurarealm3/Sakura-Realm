@@ -2813,7 +2813,7 @@ html.lite .adult-gate-bd { -webkit-backdrop-filter: none; backdrop-filter: none;
 
 
 /* ===== Jelly touch effect (jelly.js) ===== */
-.jelly-cv { display: block; touch-action: none; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.jelly-cv { display: block; touch-action: pan-y; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .wh-reze .jelly-cv { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; }
 .wh-reze.jelly-on { background-image: none; }
 .wh-reze.jelly-on .jelly-cv { opacity: 1; }
@@ -2855,15 +2855,15 @@ html.intro-lock, html.intro-lock body { overflow: hidden; }
 .in-vig { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(125% 95% at 60% 35%, transparent 50%, rgba(0, 6, 6, 0.72) 100%); }
 
 /* video panel, top-right: 3D perspective - the LEFT side sinks into the screen */
-.in-stagebox { position: absolute; top: calc(var(--u) * -17); right: calc(var(--u) * 0); width: calc(var(--u) * 106); height: calc(var(--u) * 164); perspective: calc(var(--u) * 190); perspective-origin: 100% 40%; pointer-events: none; opacity: 0; animation: inScreen 1.8s 0.3s ease forwards;
+.in-stagebox { position: absolute; top: calc(var(--u) * -17); right: calc(var(--u) * 0); width: calc(var(--u) * 106); height: calc(var(--u) * 164); perspective: calc(var(--u) * 190); perspective-origin: 100% 40%; pointer-events: none; opacity: 0; will-change: opacity; animation: inScreen 1.8s 0.3s ease forwards;
     -webkit-mask-image: linear-gradient(270deg, transparent 0%, rgba(0, 0, 0, 0.5) 9%, #000 24%), linear-gradient(180deg, #000 0%, #000 66%, transparent 96%);
     -webkit-mask-composite: source-in;
     mask-image: linear-gradient(270deg, transparent 0%, rgba(0, 0, 0, 0.5) 9%, #000 24%), linear-gradient(180deg, #000 0%, #000 66%, transparent 96%);
     mask-composite: intersect; }
 .in-screen { position: relative; width: 100%; height: 100%; border-radius: calc(var(--u) * 4); overflow: hidden; transform-origin: 100% 40%; transform: rotateY(-26deg) rotateX(4deg); -webkit-mask-image: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, 0.35) 7%, rgba(0, 0, 0, 0.8) 16%, #000 28%); mask-image: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, 0.35) 7%, rgba(0, 0, 0, 0.8) 16%, #000 28%);
-    background: #061413; border: 1px solid rgba(255, 255, 255, 0.16); border-left: 0; border-radius: 0 calc(var(--u) * 4) calc(var(--u) * 4) 0; box-shadow: 0 30px 60px rgba(0, 0, 0, 0.6), 0 0 50px rgba(40, 140, 128, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.2); }
+    background: #061413; border: 0; border-radius: 0 calc(var(--u) * 4) calc(var(--u) * 4) 0; box-shadow: none; }
 .in-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; transform: scale(1.14); transform-origin: 100% 45%; }
-.in-mist { position: absolute; top: 0; bottom: 0; right: 0; width: 26%; background: linear-gradient(270deg, rgba(110, 190, 180, 0.22), rgba(110, 190, 180, 0.07) 45%, transparent); filter: blur(6px); }
+.in-mist { display: none; }   /* removed: it drew a pale vertical bar on the right edge and cost a blur filter */
 .in-veil { display: none; }
 .in-gloss { position: absolute; inset: 0; background: linear-gradient(115deg, rgba(255, 255, 255, 0.10) 0%, transparent 34%), linear-gradient(0deg, rgba(3, 12, 11, 0.55), transparent 35%); }
 @keyframes inScreen { from { opacity: 0; } to { opacity: 1; } }
