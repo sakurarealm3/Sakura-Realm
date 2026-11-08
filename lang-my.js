@@ -41,7 +41,7 @@
         /* sidebar / home */
         'Menu Navigation': 'မီနူး', 'Welcome To Sakura Realm': 'Sakura Realm မှ ကြိုဆိုပါသည်',
         'Account Login': 'အကောင့်ဝင်ရန်', 'Sign in to unlock premium chapters': 'Premium chapter များကို ဖွင့်ရန် အကောင့်ဝင်ပါ', 'Login': 'ဝင်မည်', 'Signing in...': 'ဝင်နေသည်...',
-        'Accounts are issued by the admin': 'အကောင့်ကို admin က ထုတ်ပေးပါသည်', 'Logout': 'ထွက်မည်', 'Your Coins': 'သင့် Coins', 'Member Plan': 'Member Plan', 'Active': 'အသုံးပြုနိုင်', 'Not Active': 'သက်တမ်းကုန်',
+        'Accounts are issued by the admin': 'အကောင့်ကို admin က ထုတ်ပေးပါသည်', 'Remember me': 'ကျွန်ုပ်ကို မှတ်ထားပါ', 'Logout': 'ထွက်မည်', 'Your Coins': 'သင့် Coins', 'Member Plan': 'Member Plan', 'Active': 'အသုံးပြုနိုင်', 'Not Active': 'သက်တမ်းကုန်',
         'Welcome to Sakura Realm': 'Sakura Realm မှ ကြိုဆိုပါသည်',
         'HOT TRENDING SHOWCASE': 'လူကြိုက်အများဆုံး', 'LATEST UPDATE': 'နောက်ဆုံးအပ်ဒိတ်', 'UPDATE': 'အပ်ဒိတ်',
         'Open Latest Updates': 'နောက်ဆုံး အပ်ဒိတ်များ ဖွင့်ရန်',
