@@ -2998,7 +2998,7 @@ html.intro-lock, html.intro-lock body { overflow: hidden; }
 
 /* inputs */
 .ac-form { display: flex; flex-direction: column; gap: 10px; }
-.ac-field { position: relative; display: flex; align-items: center; height: 50px; border-radius: 15px; cursor: text;
+.ac-field { position: relative; display: flex; align-items: center; height: 50px; border-radius: 4px; cursor: text;
     background: rgba(0,0,0,.38); border: 1px solid rgba(var(--c400), .26);
     box-shadow: inset 0 2px 8px rgba(0,0,0,.35); transition: border-color .2s, box-shadow .2s, background .2s; }
 .ac-field:focus-within { border-color: rgba(var(--c300), .9); background: rgba(0,0,0,.5);
@@ -3006,19 +3006,27 @@ html.intro-lock, html.intro-lock body { overflow: hidden; }
 .ac-field-ico { width: 42px; text-align: center; font-size: 14px; color: rgba(var(--c300), .8); flex: none; transition: color .2s; }
 .ac-field:focus-within .ac-field-ico { color: rgb(var(--c300)); }
 .ac-field input { flex: 1; min-width: 0; height: 100%; padding: 0 14px 0 0; background: transparent; border: 0; outline: 0; color: #fff;
-    font-family: 'Plus Jakarta Sans', 'Noto Sans Myanmar', sans-serif; font-size: 16px; font-weight: 600; letter-spacing: .01em; }   /* 16px = iOS never zooms the page on focus */
-.ac-field input::placeholder { color: rgba(255,255,255,.38); font-weight: 500; }
+    font-family: 'Inter', 'Noto Sans Myanmar', system-ui, sans-serif; font-size: 16px; font-weight: 500; letter-spacing: 0; }   /* 16px = iOS never zooms the page on focus */
+.ac-field input::placeholder { color: rgba(255,255,255,.38); font-weight: 400; font-family: 'Inter', 'Noto Sans Myanmar', system-ui, sans-serif; }
 .ac-field input:-webkit-autofill { -webkit-text-fill-color: #fff; -webkit-box-shadow: 0 0 0 40px #0b1a1c inset; caret-color: #fff; }
 .ac-eye { flex: none; width: 44px; height: 100%; display: grid; place-items: center; background: transparent; border: 0; color: rgba(255,255,255,.5); font-size: 15px; cursor: pointer; }
 .ac-eye:hover, .ac-eye.on { color: rgb(var(--c300)); }
-.ac-err { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 9px 12px; border-radius: 12px; font-size: 12.5px; font-weight: 600; line-height: 1.5; color: #fecdd3;
+.ac-remember { display: flex; align-items: center; gap: 10px; padding: 2px 4px; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; }
+.ac-remember input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+.ac-remember-box { width: 20px; height: 20px; flex: none; display: grid; place-items: center; border-radius: 3px; font-size: 11px; color: transparent;
+    border: 1.5px solid rgba(var(--c300), .55); background: rgba(0,0,0,.35); transition: background .15s, border-color .15s, color .15s, transform .12s; }
+.ac-remember:active .ac-remember-box { transform: scale(.92); }
+.ac-remember input:checked + .ac-remember-box { background: rgb(var(--c300)); border-color: rgb(var(--c300)); color: #04201f; }
+.ac-remember input:focus-visible + .ac-remember-box { outline: 2px solid rgba(var(--c300), .9); outline-offset: 2px; }
+.ac-remember-txt { font-family: 'Inter', 'Noto Sans Myanmar', system-ui, sans-serif; font-size: 13.5px; font-weight: 500; color: rgba(255,255,255,.72); }
+.ac-err { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 9px 12px; border-radius: 4px; font-size: 12.5px; font-weight: 600; line-height: 1.5; color: #fecdd3;
     background: rgba(244,63,94,.12); border: 1px solid rgba(244,63,94,.35); font-family: 'Plus Jakarta Sans', 'Noto Sans Myanmar', sans-serif; }
 .ac-err:empty { display: none; }
 .ac-err:not(:empty)::before { content: "\f06a"; font-family: "Font Awesome 6 Free"; font-weight: 900; color: #fb7185; flex: none; margin-top: 1px; }
 
 /* buttons */
-.ac-btn { display: flex; align-items: center; justify-content: center; gap: 10px; height: 50px; margin-top: 2px; border: 0; border-radius: 15px; cursor: pointer;
-    font-family: 'Plus Jakarta Sans', 'Noto Sans Myanmar', sans-serif; font-size: 15px; font-weight: 800; letter-spacing: .04em; color: #fff;
+.ac-btn { display: flex; align-items: center; justify-content: center; gap: 10px; height: 50px; margin-top: 2px; border: 0; border-radius: 4px; cursor: pointer;
+    font-family: 'Inter', 'Noto Sans Myanmar', system-ui, sans-serif; font-size: 15px; font-weight: 700; letter-spacing: .03em; color: #fff;
     background: linear-gradient(135deg, rgb(var(--c400)) 0%, rgb(var(--c600)) 100%);
     box-shadow: 0 14px 26px -12px rgba(var(--c500), .9), inset 0 1px 0 rgba(255,255,255,.3); transition: transform .15s, filter .2s, box-shadow .2s; }
 .ac-btn:hover { filter: brightness(1.08); } .ac-btn:active { transform: scale(.98); }
