@@ -1,6 +1,7 @@
 // --- Firebase Config & SDK Imports ---
 import { initializeApp } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
-import { getDatabase, ref, onValue, update, increment, set, remove } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-database.js";
+import { getDatabase, ref, onValue, update, increment, set, remove, get as dbGet } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-database.js";
+import { getAuth, signInWithEmailAndPassword, signOut as signOutB, onAuthStateChanged as onAuthB } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBAyTxN3YWVFzkmyAsd6SWF8f2YYpbc0T8",
@@ -15,6 +16,226 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const database = getDatabase(app);
+
+// --- Firebase B: User accounts (login only; accounts are created from the Uploader) ---
+// Project A (above) keeps manga + images. Project B only handles user login.
+const firebaseConfigB = {
+  apiKey: "AIzaSyD2D-QH6R-90PTn5mN0OG4QHLT8cCoJaBA",
+  authDomain: "sakura-realm-user.firebaseapp.com",
+  databaseURL: "https://sakura-realm-user-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "sakura-realm-user",
+  storageBucket: "sakura-realm-user.firebasestorage.app",
+  messagingSenderId: "685194449190",
+  appId: "1:685194449190:web:ac83e1db140662bc5171e7"
+};
+const appB = initializeApp(firebaseConfigB, "userAuth"); // named app = does not clash with A
+const authB = getAuth(appB);
+const dbB = getDatabase(appB);
+window.sakuraUserAuth = authB;
+
+// --- Coins wallet: locked chapters cost coins; free chapters stay open to everyone ---
+const wallet = { uid: null, coins: null, unlocked: {}, plan: null, coinPath: null };
+// --- Paid member plan (Firebase B users/{uid}/plan = {type:'paid', months, expiresAt}); kept separate from the Coins plan ---
+// Active  -> every chapter opens like a free one (no coin icons). Expired -> locked chapters show a "plan expired" warning.
+const memberPaid = () => !!(wallet.uid && wallet.plan && wallet.plan.type === 'paid');
+const memberActive = () => memberPaid() && Number(wallet.plan.expiresAt) > Date.now();
+const memberExpired = () => memberPaid() && !memberActive();
+const memberLabel = (m) => { m = Number(m) || 0; return m === 12 ? '1 Year' : (m + (m === 1 ? ' Month' : ' Months')); };
+const memberDate = (ms) => { const d = new Date(Number(ms)); return isNaN(d) ? '' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }); };
+function acRenderPlan() {
+    const row = document.getElementById('acPlanRow'); if (!row) return;
+    if (!memberPaid()) { row.style.display = 'none'; return; }
+    const on = memberActive();
+    row.style.display = 'flex';
+    row.classList.toggle('is-off', !on);
+    document.getElementById('acPlanName').textContent = memberLabel(wallet.plan.months);
+    document.getElementById('acPlanState').textContent = on ? 'Active' : 'Not Active';
+    document.getElementById('acPlanDate').textContent = wallet.plan.expiresAt ? ((on ? 'Valid until ' : 'Expired on ') + memberDate(wallet.plan.expiresAt)) : '';
+}
+const coinKey = (m, c) => String(m + '__' + c).replace(/[.#$\[\]\/]/g, '_');
+// The coins list lives in Firebase B: chapterPrices/{mangaId__chapterId} = number of coins (written by the Uploader, public read)
+const chapterPrices = {};
+const coinsOf = (mangaId, chId) => Math.max(0, Math.floor(Number(chapterPrices[coinKey(mangaId, chId)]) || 0));
+// Firebase B helpers. Some networks / browsers block the SDK's live connection; Firebase A already falls back to plain HTTPS (REST),
+// so B does the same here: reads and the unlock write go over REST when the live connection does not answer in time.
+const B_URL = firebaseConfigB.databaseURL;
+let bViaRest = false;   // set once the live connection proved unusable: later reads go straight to REST
+async function bGet(path) {
+    let done = false;
+    const sdk = dbGet(ref(dbB, path)).then(s => { done = true; return s.exists() ? s.val() : null; });
+    const rest = new Promise((resolve, reject) => setTimeout(async () => {
+        if (done) return;
+        try {
+            const u = authB.currentUser, tok = u ? await u.getIdToken() : null;
+            const r = await fetch(`${B_URL}/${path}.json` + (tok ? '?auth=' + encodeURIComponent(tok) : ''), { cache: 'no-store' });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const v = await r.json(); bViaRest = true; resolve(v);
+        } catch (e) { reject(e); }
+    }, bViaRest ? 0 : 2500));
+    return Promise.any([sdk, rest]);
+}
+async function bUpdate(multi) {
+    let to;
+    try {
+        await Promise.race([update(ref(dbB), multi), new Promise((_, rej) => { to = setTimeout(() => rej(new Error('sdk-timeout')), bViaRest ? 0 : 6000); })]);
+        clearTimeout(to); return;
+    } catch (e) { clearTimeout(to); if (!e || e.message !== 'sdk-timeout') throw e; }
+    const tok = await authB.currentUser.getIdToken();
+    const r = await fetch(`${B_URL}/.json?auth=${encodeURIComponent(tok)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(multi) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+}
+let pricesLive = false, pricesSig = null;
+const applyPrices = (v) => {
+    const sig = JSON.stringify(v || {});
+    if (sig === pricesSig) return;                       // nothing changed -> no re-render
+    pricesSig = sig;
+    Object.keys(chapterPrices).forEach(k => delete chapterPrices[k]);
+    Object.assign(chapterPrices, v && typeof v === 'object' ? v : {});
+    refreshLocks();
+};
+onValue(ref(dbB, 'chapterPrices'), (snap) => {
+    pricesLive = true;
+    applyPrices(snap.exists() ? snap.val() : {});
+}, (err) => console.warn('Coins list unavailable:', err && err.code));
+const pullPrices = async () => {
+    if (pricesLive) return;
+    try {
+        const r = await fetch(`${B_URL}/chapterPrices.json`, { cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        applyPrices(await r.json());
+        bViaRest = true;
+    } catch (e) { console.warn('Coins list (REST) unavailable:', e && e.message); }
+};
+{
+    let blocked = false;
+    try { blocked = localStorage.getItem('sakura_sdk_blocked') === '1'; } catch (e) {}
+    setTimeout(pullPrices, blocked ? 0 : 1500);
+    setInterval(pullPrices, 30000);
+}
+const coinLocked = (mangaId, chId) => coinsOf(mangaId, chId) > 0 && !memberActive() && !wallet.unlocked[coinKey(mangaId, chId)];
+const lockBadgeHTML = (mangaId, ch) => {
+    const price = coinsOf(mangaId, ch.id);
+    if (!price || memberActive()) return '';
+    const open = !!wallet.unlocked[coinKey(mangaId, ch.id)];
+    return `<span class="cx-badge${open ? ' is-open' : ''}" title="${open ? 'Unlocked' : price + ' coins'}"><i class="fa-solid ${open ? 'fa-lock-open' : 'fa-lock'}"></i><i class="fa-solid fa-coins"></i><b>${price}</b></span>`;
+};
+function refreshLocks() {
+    try { acRenderPlan(); } catch (e) {}
+    try { if (currentActiveView === 'detail') renderChapterList(currentDetailId()); } catch (e) {}
+    try { const c = document.getElementById('readerPagesContainer'); if (c && c.dataset.cxLocked === '1' && !coinLocked(...c.dataset.cxParam.split('___'))) renderReaderContentInner(c.dataset.cxParam); } catch (e) {}
+}
+function acRenderCoins() {
+    const row = document.getElementById('acCoinsRow'), n = document.getElementById('acCoins');
+    if (row && n) { row.style.display = wallet.coins === null ? 'none' : 'flex'; n.textContent = wallet.coins === null ? '0' : wallet.coins; }
+}
+let cxBusy = false;
+function coinAsk({ icon = 'fa-coins', title, text, rows = [], yes = 'Yes', no = 'No' }) {
+    if (cxBusy) return Promise.resolve(false);
+    cxBusy = true;
+    return new Promise((resolve) => {
+        const el = document.createElement('div');
+        el.className = 'cx-modal';
+        el.innerHTML = `<div class="cx-sheet" role="dialog" aria-modal="true"><div class="cx-ico"><i class="fa-solid ${icon}"></i></div><h3>${esc(title)}</h3><p>${esc(text)}</p>` +
+            (rows.length ? `<div class="cx-rows">${rows.map(r => `<div><span>${esc(r[0])}</span><b><i class="fa-solid fa-coins"></i> ${esc(r[1])}</b></div>`).join('')}</div>` : '') +
+            `<div class="cx-foot"><button type="button" class="cx-no">${esc(no)}</button>${yes ? `<button type="button" class="cx-yes">${esc(yes)}</button>` : ''}</div></div>`;
+        const done = (v) => { el.remove(); cxBusy = false; resolve(v); };
+        el.addEventListener('click', (e) => { if (e.target === el || e.target.closest('.cx-no')) done(false); else if (e.target.closest('.cx-yes')) done(true); });
+        document.body.appendChild(el);
+    });
+}
+async function coinGate(mangaId, chId) {
+    const price = coinsOf(mangaId, chId);
+    if (!price || wallet.unlocked[coinKey(mangaId, chId)]) return true;
+    if (memberActive()) return true;
+    if (memberExpired()) {
+        acRenderPlan();
+        await coinAsk({ icon: 'fa-hourglass-end', title: 'Member plan expired', text: `Your Member Plan (${memberLabel(wallet.plan.months)}) expired on ${memberDate(wallet.plan.expiresAt)}. Please renew your plan to keep reading locked chapters.`, yes: null, no: 'OK' });
+        return false;
+    }
+    if (!wallet.uid) {
+        const go = await coinAsk({ icon: 'fa-lock', title: 'Login needed', text: `This chapter costs ${price} coins. Login from the menu to unlock it.`, yes: 'Open menu', no: 'Close' });
+        if (go) { const sb = document.getElementById('rightSidebar'); if (sb && sb.classList.contains('translate-x-full')) window.toggleRightSidebar(); }
+        return false;
+    }
+    try { wallet.coins = Number(await bGet(wallet.coinPath || ('coinAccounts/' + wallet.uid + '/coins'))) || 0; acRenderCoins(); } catch (e) {}   // fresh balance (the admin may have topped up)
+    const have = wallet.coins || 0;
+    if (have < price) { await coinAsk({ icon: 'fa-coins', title: 'Not enough coins', text: `This chapter costs ${price} coins. You have ${have}.`, rows: [['Price', price], ['Your coins', have]], yes: null, no: 'OK' }); return false; }
+    const ok = await coinAsk({ icon: 'fa-lock-open', title: 'Unlock this chapter?', text: 'Are you sure you want to open it? The coins will be taken from your account.', rows: [['Price', price], ['Your coins', have], ['After', have - price]], yes: 'Yes, unlock', no: 'No' });
+    if (!ok) return false;
+    try {
+        const left = have - price, key = coinKey(mangaId, chId);
+        await bUpdate({ [wallet.coinPath || ('coinAccounts/' + wallet.uid + '/coins')]: left, ['unlocked/' + wallet.uid + '/' + key]: { price, at: Date.now() } });
+        wallet.coins = left; wallet.unlocked[key] = { price }; acRenderCoins(); refreshLocks();
+        showToast('Chapter unlocked', 'ok');
+        return true;
+    } catch (err) { showToast('Unlock failed - try again', 'err'); return false; }
+}
+function renderLockedReader(container, mangaId, chId, ch, param) {
+    container.style.height = 'auto'; container.dataset.cxLocked = '1'; container.dataset.cxParam = param;
+    container.innerHTML = `<div class="cx-lockcard"><div class="cx-ico"><i class="fa-solid fa-lock"></i></div><h3>${esc(ch.title)}</h3><p>${memberExpired() ? 'Your member plan has expired' : 'This chapter is locked'}</p><button type="button" class="cx-yes">${memberExpired() ? 'View details' : 'Unlock &middot; <i class="fa-solid fa-coins"></i> ' + coinsOf(mangaId, chId)}</button></div>`;
+    container.querySelector('.cx-yes').onclick = async () => { if (await coinGate(mangaId, chId)) renderReaderContentInner(param); };
+}
+
+// --- Sidebar account UI (Login form <-> User Account) ---
+// Accounts are created from the Uploader; only accounts with an active users/{uid} record can log in here.
+const acEl = (id) => document.getElementById(id);
+const acShow = (loggedIn) => {
+    acEl('acLoginView')?.classList.toggle('hidden', loggedIn);
+    const pv = acEl('acProfileView');
+    if (pv) { pv.classList.toggle('hidden', !loggedIn); pv.classList.toggle('flex', loggedIn); }
+};
+const acErr = (t) => { const e = acEl('acErr'); if (e) e.textContent = t || ''; };
+const acBusy = (b) => { const x = acEl('acBtn'); if (x) { x.disabled = b; x.innerHTML = b ? '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Signing in...</span>' : '<i class="fa-solid fa-right-to-bracket"></i><span>Login</span>'; } };
+acEl('acEye')?.addEventListener('click', () => { const i = acEl('acPass'), on = i.type === 'password'; i.type = on ? 'text' : 'password'; const b = acEl('acEye'); b.classList.toggle('on', on); b.innerHTML = '<i class="fa-regular ' + (on ? 'fa-eye-slash' : 'fa-eye') + '"></i>'; });
+
+acEl('acLoginForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    acErr(''); acBusy(true);
+    clearTimeout(window.__acLoginTimer);
+    window.__acLoginTimer = setTimeout(() => { acBusy(false); acErr('Network ပြဿနာ ရှိနေပါတယ်၊ ပြန်ကြိုးစားပါ'); }, 25000);
+    try { await signInWithEmailAndPassword(authB, acEl('acEmail').value.trim(), acEl('acPass').value); }
+    catch (err) { clearTimeout(window.__acLoginTimer); acBusy(false); acErr(err && err.code === 'auth/network-request-failed' ? 'Network ပြဿနာ ရှိနေပါတယ်၊ ပြန်ကြိုးစားပါ' : 'Email သို့မဟုတ် password မှားနေပါတယ်'); }
+});
+acEl('acLogout')?.addEventListener('click', () => signOutB(authB));
+window.sakuraLogout = () => signOutB(authB);
+
+onAuthB(authB, async (user) => {
+    clearTimeout(window.__acLoginTimer);
+    if (!user) { acShow(false); acBusy(false); wallet.uid = null; wallet.coins = null; wallet.unlocked = {}; wallet.plan = null; acRenderCoins(); refreshLocks(); return; }
+    try {
+        const rec = await bGet('users/' + user.uid);
+        if (rec && rec.active !== false) {
+            const name = rec.username || user.email.split('@')[0];
+            acEl('acName').textContent = name;
+            acEl('acMail').textContent = user.email;
+            acEl('acAvatar').textContent = name.charAt(0).toUpperCase();
+            acEl('acPass').value = '';
+            wallet.uid = user.uid;
+            // Coins accounts and Paid accounts live in their own nodes of B: coinAccounts/{uid} and paidAccounts/{uid}
+            // (old accounts that still carry users/{uid}/plan keep working until the admin re-saves their plan)
+            let ca = null, pa = null;
+            try { ca = await bGet('coinAccounts/' + user.uid); } catch (e) {}
+            try { pa = await bGet('paidAccounts/' + user.uid); } catch (e) {}
+            wallet.coinPath = 'coinAccounts/' + user.uid + '/coins';
+            if (!ca && !pa && rec.plan) {
+                if (rec.plan.type === 'coins') { ca = { coins: rec.plan.coins }; wallet.coinPath = 'users/' + user.uid + '/plan/coins'; }
+                else if (rec.plan.type === 'paid') pa = rec.plan;
+            }
+            wallet.coins = ca ? (Number(ca.coins) || 0) : null;
+            wallet.plan = pa ? { type: 'paid', months: Number(pa.months) || 0, expiresAt: Number(pa.expiresAt) || 0 } : null;
+            try { wallet.unlocked = (await bGet('unlocked/' + user.uid)) || {}; } catch (e) { wallet.unlocked = {}; }
+            acRenderCoins(); refreshLocks();
+            acBusy(false); acShow(true);
+            return;
+        }
+        await signOutB(authB);
+        wallet.uid = null; wallet.coins = null; wallet.unlocked = {}; wallet.plan = null;
+        acShow(false); acBusy(false); acErr('ဒီ account ကို အသုံးပြုခွင့် မရှိပါ');
+    } catch (err) {
+        await signOutB(authB).catch(() => {});
+        acShow(false); acBusy(false); acErr('စစ်ဆေး၍မရပါ၊ ပြန်ကြိုးစားပါ');
+    }
+});
 
 // Firebase App Check (blocks scripts/bots that call your database outside this site).
 // Paste your reCAPTCHA v3 / Enterprise site key here after enabling App Check in the console. Empty = skipped.
@@ -205,6 +426,7 @@ const REST_EVERY_MS = 45000;
 function startRestFallback(node) {
     if (restOn[node]) return;
     restOn[node] = true;
+    try { localStorage.setItem('sakura_sdk_blocked', '1'); } catch (e) {}
     const pull = async () => {
         if (sdkLive[node]) return;                                   // live connection is working: nothing to do
         try {
@@ -232,9 +454,13 @@ function startRestFallback(node) {
 
 function listenToFirebaseData() {
     const onNode = (node) => {
-        setTimeout(() => { if (!sdkLive[node]) startRestFallback(node); }, 4000);
+        // this device already needed the fallback last time -> start it at once; otherwise give the live connection 1.5 s
+        let blocked = false;
+        try { blocked = localStorage.getItem('sakura_sdk_blocked') === '1'; } catch (e) {}
+        setTimeout(() => { if (!sdkLive[node]) startRestFallback(node); }, blocked ? 0 : 1500);
         onValue(ref(database, node), (snapshot) => {
             sdkLive[node] = true; gotAnyData = true;
+            try { localStorage.removeItem('sakura_sdk_blocked'); } catch (e) {}
             { const nb = document.getElementById('netProblem'); if (nb) nb.remove(); }
             rawNodes[node] = snapshot.val();
             nodeLoaded[node] = true;
@@ -1189,11 +1415,15 @@ function renderChapterList(mangaId) {
     container.innerHTML = '';
 
     const foundManga = loadAllMangas().find(m => m.id === mangaId);
-    const baseChapters = (foundManga && foundManga.chapters && foundManga.chapters.length > 0) ? foundManga.chapters : [
-        { id: 'ch-3', title: 'Chapter 3 (Preview)', date: '2026-06-01', pages: [] },
-        { id: 'ch-2', title: 'Chapter 2 (Preview)', date: '2026-05-15', pages: [] },
-        { id: 'ch-1', title: 'Chapter 1 (Preview)', date: '2026-05-01', pages: [] }
-    ];
+    const baseChapters = (foundManga && foundManga.chapters) ? foundManga.chapters : [];
+    if (baseChapters.length === 0) {
+        // no chapters uploaded yet: say so (no fake preview chapters)
+        const countEl0 = document.getElementById('chapterCountBadge');
+        if (countEl0) countEl0.textContent = 0;
+        container.className = 'w-full';
+        container.innerHTML = '<div class="py-6 text-center text-xs text-slate-400/80 italic">No Chapter Yet</div>';
+        return;
+    }
     // stored order is newest-first; "Oldest" just flips a copy (the data itself is untouched)
     const chapters = chPrefs.sort === 'oldest' ? baseChapters.slice().reverse() : baseChapters;
 
@@ -1218,7 +1448,7 @@ function renderChapterList(mangaId) {
             tile.style.setProperty('--i', Math.min(ci, 12));
             tile.title = ch.title;
             tile.onclick = () => navigateToReaderView(mangaId, ch.id, ch.title);
-            tile.innerHTML = `<span class="ch-tile-label">CH</span><span class="ch-tile-num">${esc(chapterTileLabel(ch))}</span>`;
+            tile.innerHTML = `<span class="ch-tile-label">CH</span><span class="ch-tile-num">${esc(chapterTileLabel(ch))}</span>` + lockBadgeHTML(mangaId, ch);
             container.appendChild(tile);
         });
         return;
@@ -1247,6 +1477,7 @@ function renderChapterList(mangaId) {
                     </span>
                 </div>
             </div>
+            ${lockBadgeHTML(mangaId, ch)}
             <span class="ch-progress" aria-hidden="true"><i style="width:${pct}%"></i></span>
         `;
 
@@ -1287,18 +1518,22 @@ window.readFirstChapter = function() {
         const firstCh = found.chapters[found.chapters.length - 1];
         navigateToReaderView(mangaId, firstCh.id, firstCh.title);
     } else {
-        window.navigateToView('reader', 'ch-1', 'Chapter Reading');
+        showToast('No Chapter Yet', 'err');
     }
 };
 
 function navigateToReaderView(mangaId, chapterId, chapterTitle) {
-    if (mangaId) incrementMangaViewCount(mangaId);
-    readerFromDetail = (currentActiveView === 'detail');
-    window.navigateToView('reader', `${mangaId}___${chapterId}`, chapterTitle);
+    coinGate(mangaId, chapterId).then((ok) => {
+        if (!ok) return;
+        if (mangaId) incrementMangaViewCount(mangaId);
+        readerFromDetail = (currentActiveView === 'detail');
+        window.navigateToView('reader', `${mangaId}___${chapterId}`, chapterTitle);
+    });
 }
 
 // Switch chapter inside the reader without adding a history entry
-function openChapterInPlace(mangaId, chapterId, chapterTitle) {
+async function openChapterInPlace(mangaId, chapterId, chapterTitle) {
+    if (!(await coinGate(mangaId, chapterId))) return;
     if (mangaId) incrementMangaViewCount(mangaId);
     const st = { view: 'reader', id: `${mangaId}___${chapterId}`, title: chapterTitle, idx: navIndex };
     history.replaceState(st, '', `#reader-${st.id}`);
@@ -1721,10 +1956,13 @@ function renderReaderContentInner(readerParam, startIndex = 0, offlineUrls = nul
     if (!container) return;
     if (readerObserver) { readerObserver.disconnect(); readerObserver = null; }
     container.innerHTML = '';
+    delete container.dataset.cxLocked;
 
     const [mangaId, chapterId] = readerParam.includes('___') ? readerParam.split('___') : [null, readerParam];
     const foundManga = mangaId ? loadAllMangas().find(m => m.id === mangaId) : null;
     const foundCh = (foundManga && foundManga.chapters) ? foundManga.chapters.find(c => c.id === chapterId) : null;
+
+    if (!offlineUrls && foundManga && foundCh && coinLocked(mangaId, chapterId)) { renderLockedReader(container, mangaId, chapterId, foundCh, readerParam); return; }
 
     const floatingTitle = document.getElementById('readerFloatingTitle');
     if (floatingTitle && foundManga && foundCh) floatingTitle.textContent = `${foundManga.title} - ${foundCh.title}` + (offlineUrls ? '  \u00b7  Offline' : '');
@@ -1884,8 +2122,13 @@ function fillDetail(found) {
     const genresContainer = document.getElementById('detailGenresContainer');
     if (genresContainer) {
         genresContainer.innerHTML = '';
-        (found.genre || '').split(',').forEach(g => {
-            const cleanG = g.trim();
+        // small tags first, long ones after: they pack into fewer rows instead of a short tag being pushed down alone
+        const genreList = (found.genre || '').split(',').map(g => g.trim()).filter(Boolean)
+            .map((g, i) => ({ g, i }))
+            .sort((a, b) => (a.g.length - b.g.length) || (a.i - b.i))
+            .map(o => o.g);
+        genreList.forEach(g => {
+            const cleanG = g;
             if (cleanG !== '') {
                 const tag = document.createElement('div');
                 tag.className = "individual-genre-frame";
@@ -1893,11 +2136,53 @@ function fillDetail(found) {
                 genresContainer.appendChild(tag);
             }
         });
+        packGenreChips(genresContainer);
     }
 
     renderChapterList(found.id);
     applyBookmarkUI(safeGet(BOOKMARK_KEY, []).includes(found.id));
 }
+
+// Genre tags: order them so that the normal wrapping fills every row as much as possible (a tag is only
+// pushed to the next row when it really does not fit). Only the ORDER of the tags is changed; the layout itself
+// stays the plain flex-wrap, so nothing can overflow or break even if a measurement is a little off.
+function packGenreChips(box, tries) {
+    tries = tries || 0;
+    if (!box) return;
+    const chips = Array.from(box.querySelectorAll('.individual-genre-frame'));
+    if (chips.length < 2) return;
+    const W = box.clientWidth;
+    if (!W) {                                    // page not visible yet: try again on the next frames
+        if (tries < 40) requestAnimationFrame(() => packGenreChips(box, tries + 1));
+        return;
+    }
+    const gap = parseFloat(getComputedStyle(box).columnGap) || 6;
+    const items = chips.map(el => ({ el, w: el.offsetWidth }));      // offsetWidth = layout width (ignores animations/zoom effects)
+    if (items.some(it => !it.w)) return;
+    items.sort((a, b) => b.w - a.w);                       // biggest first, each goes to the first row with room
+    const rows = [];
+    items.forEach(it => {
+        let r = rows.find(r => r.used + gap + it.w <= W - 1);
+        if (!r) { r = { items: [], used: -gap }; rows.push(r); }
+        r.used += gap + it.w;
+        r.items.push(it);
+    });
+    rows.forEach(r => r.items.sort((a, b) => a.w - b.w));
+    rows.sort((a, b) => (b.items.length - a.items.length) || (a.used - b.used));   // rows with the small tags first
+    rows.forEach(r => r.items.forEach(it => box.appendChild(it.el)));              // re-append = new order
+}
+(function () {                                 // re-order when the screen turns or fonts finish loading
+    let t = 0;
+    const again = () => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+            const box = document.getElementById('detailGenresContainer');
+            if (box && box.children.length) packGenreChips(box);
+        }, 150);
+    };
+    window.addEventListener('resize', again);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(again);
+})();
 
 // Decides HOW to switch views: smooth cross-fade (View Transitions API) -> CSS slide fallback -> instant (reduced motion)
 function renderView(state, isRestore = false) {
@@ -2600,9 +2885,29 @@ window.toggleRightSidebar = function() {
         sidebar.classList.remove('translate-x-full');
         backdrop.classList.remove('opacity-0', 'pointer-events-none');
         document.documentElement.classList.add('sidebar-open');      // page behind must not scroll while the menu is open
+        sbFreeze(true);
         setTimeout(resizeSidebarCanvas, 50);
     }
 };
+
+// ---- Sidebar height is frozen while the on-screen keyboard is open ----
+// The keyboard shrinks the viewport -> the menu (and its branch scene, which is anchored to the bottom) used to shrink with it and the
+// branches jumped up. Now the menu keeps its full height, so the keyboard simply covers the lower part.
+const sbEl = document.getElementById('rightSidebar');
+let sbStableH = 0, sbStableW = 0;
+const sbTyping = () => { const a = document.activeElement; return !!(a && sbEl && sbEl.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)); };
+function sbFreeze(force) {
+    if (!sbEl) return;
+    const w = Math.round(window.innerWidth), h = Math.round(window.innerHeight);
+    const keyboardLike = w === sbStableW && sbStableH && h < sbStableH * 0.85;     // same width but much shorter = keyboard, not a rotation
+    if (!force && (sbTyping() || keyboardLike)) return;
+    sbStableW = w; sbStableH = h;
+    sbEl.style.setProperty('--sb-h', h + 'px');
+}
+window.addEventListener('resize', () => sbFreeze(false));
+window.addEventListener('orientationchange', () => setTimeout(() => { sbFreeze(true); resizeSidebarCanvas(); }, 350));
+if (sbEl) sbEl.addEventListener('focusout', () => setTimeout(() => { if (!sbTyping()) sbFreeze(false); }, 450));
+sbFreeze(true);
 
 // ============================================================================
 //  SIDEBAR SCENE - blossoming branches
@@ -2629,6 +2934,7 @@ function mulberry32(a) {
 
 function resizeSidebarCanvas() {
     if (!sidebarCanvas || !sCtx) return;
+    if (sbTyping()) return;                       // keyboard open: keep the scene exactly as it is
     const w = sidebarCanvas.parentElement.clientWidth;
     const h = sidebarCanvas.parentElement.clientHeight;
     if (!w || !h) return;
@@ -3387,6 +3693,7 @@ async function startDownload(mangaId, chapterId, opts = {}) {
     const manga = loadAllMangas().find(m => m.id === mangaId);
     const ch = manga && (manga.chapters || []).find(c => c.id === chapterId);
     if (!manga || !ch) return;
+    if (!(await coinGate(mangaId, chapterId))) return;
     const urls = (ch.pages || []).map(p => p && p.data).filter(Boolean);
     if (!urls.length) { showToast('No pages to download in ' + ch.title, 'err'); return; }
 
